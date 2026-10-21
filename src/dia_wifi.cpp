@@ -78,15 +78,40 @@ void saveConfigCallback() {
     if (wm.server && String(wm.server->uri()) == "/paramsave") s_portalRestart = false;
 }
 
-/** Zdroj ešte nie je nastavený / wizard nedokončený → na displeji držať IP návod. */
+/** Slot má použiteľný zdroj (nie len meno v selecte bez prihlásenia). */
+static bool diaSourceReady(int slot) {
+    if (slot < 0 || slot > 1) return false;
+    String s = profiles[slot].dsSource;
+    s.trim();
+    s.toLowerCase();
+    if (s.length() == 0 || s == "off") return false;
+    if (s == "nightscout") return profiles[slot].nsUrl.length() > 0;
+    if (s == "libre") return profiles[slot].libreUser.length() > 0 && profiles[slot].librePwd.length() > 0;
+    if (s == "dexcom") return profiles[slot].dexUser.length() > 0 && profiles[slot].dexPwd.length() > 0;
+    if (s == "guardian") return carelinkTokensReadyForSlot(slot);
+    return false;
+}
+
+/**
+ * Na displeji držať IP, kým nie je čo sťahovať.
+ * (prázdny/off zdroj, nedokončený wizard, chýbajúce heslo/token → inak by svietilo len „Config“)
+ */
 static bool diaNeedsSourceSetup() {
-    if (profiles[0].dsSource.length() == 0) return true;
     if (preferences.isKey("wiz") && preferences.getUChar("wiz", 255) != 255) return true;
+    if (!diaSourceReady(0)) return true;
+    if (!diaBoardIsRound() && display_mode >= 2) {
+        String s1 = profiles[1].dsSource;
+        s1.trim();
+        s1.toLowerCase();
+        // Dual: B ešte nevybrané, alebo vybrané ale nepripravené
+        if (s1.length() == 0) return true;
+        if (s1 != "off" && !diaSourceReady(1)) return true;
+    }
     return false;
 }
 
 static void showConnectedPortalHint() {
-    // IP ako titulok (najväčší text) – bez zdroja dát musí byť stále viditeľná
+    // IP ako titulok (najväčší text) – bez hotového zdroja musí byť stále viditeľná
     String ip = WiFi.localIP().toString();
     if (ip == "0.0.0.0" || ip.length() == 0) ip = "—.—.—.—";
     showBootStatus(ip.c_str(), S(Str::BootPortalHint));
@@ -1667,8 +1692,12 @@ void diaWifiSavePortalConfigIfNeeded() {
         if (!diaBoardIsRound() && display_mode >= 2) diaConfigPushSlot(1);
         forceFetch = true;
         diaUiApplyDisplayMode();
-        // Po nastavení zdroja zruš IP návod a ukáž ciferník
-        restore_ui_after_wifi();
+        // Ciferník až keď je zdroj skutočne pripravený – inak IP (nie „Config“)
+        if (diaNeedsSourceSetup()) {
+            showConnectedPortalHint();
+        } else {
+            restore_ui_after_wifi();
+        }
         Serial.println("[wifi] param saved, bez restartu");
         return;
     }
