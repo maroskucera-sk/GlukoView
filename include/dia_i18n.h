@@ -199,7 +199,7 @@ enum class Str : uint16_t {
     VolHigh,
     OrientUsbR,
     OrientUsbL,
-    /** Po WiFi: "Otvor v telefóne:\n%s\n..." – %s = IP */
+    /** Po WiFi (detail pod IP v titulku): kam otvoriť nastavenie */
     BootPortalHint,
     StrCount
 };

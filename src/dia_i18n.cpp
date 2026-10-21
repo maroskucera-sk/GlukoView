@@ -26,7 +26,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Áno, zmazať", "Načítavam...", "Staré", "Sync...",
         "Aktualizujem... %d%%", "Kontrolujem...", "WiFi nie je\npripojené.", "Server\nnedostupný",
         "Máš najnovšiu\nverziu.", "Chyba sťahovania", "Aktualizujem... 0%", "Pripájam sa...",
-        "WiFi znova", "Skenujem siete...", "Pripojené!", "1. WiFi: GlukoView\n2. Web sa otvorí\n3. Vyber sieť",
+        "WiFi znova", "Skenujem siete...", "Pripojené!", "1. WiFi: GlukoView\n2. Web sa otvorí\n3. Inak: 10.0.0.1",
         "Znova skúšam\nuložené siete...", "Ukladám a\nreštartujem...", "WiFi", "Auth",
         "Sieť", "Bez dát", "Config", "GlukoView",
         "Zdroj dát", "Vyber zdroj", "Nightscout", "Len ak je zdroj Nightscout",
@@ -67,7 +67,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Vzhľad", "Vzhľad 3/4", "Zvuk", "Zvuk",
         "Tichšie", "Hlasnejšie", "Tichá", "Nízka", "Stredná", "Vysoká",
         "Otočenie: USB vpravo", "Otočenie: USB vľavo",
-        "Otvor v telefóne:\n%s\n(rovnaká WiFi)\na nastav zdroj"
+        "Rovnaká WiFi\nOtvor túto IP\na nastav zdroj"
     },
     {
         "Systém 1/4", "Informace", "Obnovit", "Auto-upd: ZAP",
@@ -82,7 +82,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Ano, smazat", "Načítám...", "Staré", "Sync...",
         "Aktualizuji... %d%%", "Kontroluji...", "WiFi není\npřipojené.", "Server\nnedostupný",
         "Máte nejnovější\nverzi.", "Chyba stahování", "Aktualizuji... 0%", "Připojuji se...",
-        "WiFi znovu", "Skenuji sítě...", "Připojeno!", "1. WiFi: GlukoView\n2. Web se otevře\n3. Vyber síť",
+        "WiFi znovu", "Skenuji sítě...", "Připojeno!", "1. WiFi: GlukoView\n2. Web se otevře\n3. Jinak: 10.0.0.1",
         "Znovu zkouším\nuložené sítě...", "Ukládám a\nrestartuji...", "WiFi", "Auth",
         "Síť", "Bez dat", "Config", "GlukoView",
         "Zdroj dat", "Vyber zdroj", "Nightscout", "Jen pokud je zdroj Nightscout",
@@ -123,7 +123,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Vzhled", "Vzhled 3/4", "Zvuk", "Zvuk",
         "Tišeji", "Hlasitěji", "Tichá", "Nízká", "Střední", "Vysoká",
         "Otočení: USB vpravo", "Otočení: USB vlevo",
-        "Otevři v telefonu:\n%s\n(stejná WiFi)\na nastav zdroj"
+        "Stejná WiFi\nOtevři tuto IP\na nastav zdroj"
     },
     {
         "System 1/4", "Info", "Refresh", "Auto-upd: ON",
@@ -138,7 +138,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Yes, erase", "Loading...", "Old", "Sync...",
         "Updating... %d%%", "Checking...", "WiFi is not\nconnected.", "Server\nunavailable",
         "You have the\nlatest version.", "Download failed", "Updating... 0%", "Connecting...",
-        "WiFi again", "Scanning...", "Connected!", "1. WiFi: GlukoView\n2. Page opens\n3. Pick a network",
+        "WiFi again", "Scanning...", "Connected!", "1. WiFi: GlukoView\n2. Page opens\n3. Else: 10.0.0.1",
         "Retrying saved\nnetworks...", "Saving and\nrestarting...", "WiFi", "Auth",
         "Network", "No data", "Config", "GlukoView",
         "Data source", "Choose source", "Nightscout", "Only if the source is Nightscout",
@@ -179,7 +179,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Look", "Look 3/4", "Sound", "Sound",
         "Quieter", "Louder", "Quiet", "Low", "Medium", "High",
         "Rotate: USB right", "Rotate: USB left",
-        "Open on your phone:\n%s\n(same WiFi)\nand set the source"
+        "Same WiFi\nOpen this IP\nand set the source"
     },
     {
         "System 1/4", "Info", "Aktualisieren", "Auto-upd: AN",
@@ -194,7 +194,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Ja, löschen", "Laden...", "Alt", "Sync...",
         "Aktualisiere... %d%%", "Prüfe...", "WiFi ist nicht\nverbunden.", "Server\nnicht erreichbar",
         "Sie haben die\nneueste Version.", "Download fehlgeschlagen", "Aktualisiere... 0%", "Verbinde...",
-        "WiFi erneut", "Scanne...", "Verbunden!", "1. WiFi: GlukoView\n2. Seite öffnet sich\n3. Netz wählen",
+        "WiFi erneut", "Scanne...", "Verbunden!", "1. WiFi: GlukoView\n2. Seite öffnet sich\n3. Sonst: 10.0.0.1",
         "Gespeicherte Netze\nwerden erneut versucht...", "Speichern und\nNeustart...", "WiFi", "Auth",
         "Netz", "Keine Daten", "Config", "GlukoView",
         "Datenquelle", "Quelle wählen", "Nightscout", "Nur wenn die Quelle Nightscout ist",
@@ -235,7 +235,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Aussehen", "Aussehen 3/4", "Ton", "Ton",
         "Leiser", "Lauter", "Leise", "Niedrig", "Mittel", "Laut",
         "Drehung: USB rechts", "Drehung: USB links",
-        "Am Telefon öffnen:\n%s\n(gleiches WiFi)\nund Quelle einstellen"
+        "Gleiches WiFi\nDiese IP öffnen\nund Quelle einstellen"
     },
     {
         "Sistema 1/4", "Info", "Actualizar", "Auto-upd: ON",
@@ -250,7 +250,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Sí, borrar", "Cargando...", "Antiguo", "Sync...",
         "Actualizando... %d%%", "Comprobando...", "WiFi no está\nconectado.", "Servidor\nno disponible",
         "Tienes la\núltima versión.", "Error de descarga", "Actualizando... 0%", "Conectando...",
-        "WiFi de nuevo", "Escaneando...", "¡Conectado!", "1. WiFi: GlukoView\n2. Se abre la web\n3. Elige una red",
+        "WiFi de nuevo", "Escaneando...", "¡Conectado!", "1. WiFi: GlukoView\n2. Se abre la web\n3. Si no: 10.0.0.1",
         "Reintentando redes\nguardadas...", "Guardando y\nreiniciando...", "WiFi", "Auth",
         "Red", "Sin datos", "Config", "GlukoView",
         "Fuente de datos", "Elige fuente", "Nightscout", "Solo si la fuente es Nightscout",
@@ -291,7 +291,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Aspecto", "Aspecto 3/4", "Sonido", "Sonido",
         "Más bajo", "Más alto", "Suave", "Baja", "Media", "Alta",
         "Giro: USB derecha", "Giro: USB izquierda",
-        "Abre en el teléfono:\n%s\n(misma WiFi)\ny configura la fuente"
+        "Misma WiFi\nAbre esta IP\ny configura la fuente"
     },
     {
         "Système 1/4", "Infos", "Actualiser", "Auto-upd: ON",
@@ -306,7 +306,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Oui, effacer", "Chargement...", "Ancien", "Sync...",
         "Mise à jour... %d%%", "Vérification...", "WiFi non\nconnecté.", "Serveur\nindisponible",
         "Vous avez la\ndernière version.", "Échec du téléchargement", "Mise à jour... 0%", "Connexion...",
-        "WiFi à nouveau", "Scan...", "Connecté !", "1. WiFi: GlukoView\n2. La page s'ouvre\n3. Choisir un réseau",
+        "WiFi à nouveau", "Scan...", "Connecté !", "1. WiFi: GlukoView\n2. La page s'ouvre\n3. Sinon: 10.0.0.1",
         "Nouveaux essais des\nréseaux enregistrés...", "Enregistrement et\nredémarrage...", "WiFi", "Auth",
         "Réseau", "Pas de données", "Config", "GlukoView",
         "Source de données", "Choisir la source", "Nightscout", "Uniquement si la source est Nightscout",
@@ -347,7 +347,7 @@ static const char *const kText[LANG_COUNT][(int)Str::StrCount] = {
         "Aspect", "Aspect 3/4", "Son", "Son",
         "Moins fort", "Plus fort", "Faible", "Basse", "Moyenne", "Haute",
         "Rotation: USB droite", "Rotation: USB gauche",
-        "Ouvre sur le téléphone:\n%s\n(même WiFi)\net règle la source"
+        "Même WiFi\nOuvre cette IP\net règle la source"
     },
 };
 

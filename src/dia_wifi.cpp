@@ -86,9 +86,10 @@ static bool diaNeedsSourceSetup() {
 }
 
 static void showConnectedPortalHint() {
-    char detail[128];
-    snprintf(detail, sizeof(detail), S(Str::BootPortalHint), WiFi.localIP().toString().c_str());
-    showBootStatus(S(Str::BootConnected), detail);
+    // IP ako titulok (najväčší text) – bez zdroja dát musí byť stále viditeľná
+    String ip = WiFi.localIP().toString();
+    if (ip == "0.0.0.0" || ip.length() == 0) ip = "—.—.—.—";
+    showBootStatus(ip.c_str(), S(Str::BootPortalHint));
 }
 
 /** Captive portal / úvod: v AP rovno WiFi výber, v STA rovno nastavenie zdroja. */
@@ -1699,11 +1700,18 @@ void diaWifiMaintain(uint32_t currentMillis) {
     if (diaFetchBusy()) return;
 
     static uint32_t wifiDownSince = 0;
+    static uint32_t lastSetupHint = 0;
     bool connected = (WiFi.status() == WL_CONNECTED);
     if (connected) {
         if (!wifi_was_connected || wifiDownSince != 0) {
             forceFetch = true;
             autoSaveNetwork();
+            if (diaNeedsSourceSetup()) showConnectedPortalHint();
+        }
+        // Bez zdroja dát držať IP na displeji (občas obnoviť, keby sa zmenila)
+        if (diaNeedsSourceSetup() && (currentMillis - lastSetupHint > 15000UL)) {
+            lastSetupHint = currentMillis;
+            showConnectedPortalHint();
         }
         wifiDownSince = 0;
         wifi_was_connected = true;
