@@ -54,7 +54,7 @@ Firmvér sa sťahuje len cez HTTPS a len keď sedí podpis. Prepínač „TLS be
 
 Na serveri pre každú dosku:
 
-- `version.txt` — napr. `1.0` (musí sedieť s buildom)
+- `version.txt` — napr. `1.1` (musí sedieť s buildom)
 - `firmware.bin`
 - `firmware.sig`
 

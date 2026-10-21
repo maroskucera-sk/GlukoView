@@ -31,3 +31,6 @@ logindata.json
 **/logindata.json
 *.env
 .env.*
+
+dist/
+
