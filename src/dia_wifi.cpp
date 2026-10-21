@@ -103,12 +103,14 @@ static bool diaNeedsSourceSetup() {
         String s1 = profiles[1].dsSource;
         s1.trim();
         s1.toLowerCase();
-        // Dual: B ešte nevybrané, alebo vybrané ale nepripravené
+        // Dual: B ešte nevybrané, alebo vybrané ale nepripravené (off = zámerne vypnuté)
         if (s1.length() == 0) return true;
         if (s1 != "off" && !diaSourceReady(1)) return true;
     }
     return false;
 }
+
+bool diaWifiNeedsSetupHint() { return diaNeedsSourceSetup(); }
 
 static void showConnectedPortalHint() {
     // IP ako titulok (najväčší text) – bez hotového zdroja musí byť stále viditeľná
@@ -1690,12 +1692,13 @@ void diaWifiSavePortalConfigIfNeeded() {
     if (!s_portalRestart) {
         diaConfigPushSlot(0);
         if (!diaBoardIsRound() && display_mode >= 2) diaConfigPushSlot(1);
-        forceFetch = true;
         diaUiApplyDisplayMode();
-        // Ciferník až keď je zdroj skutočne pripravený – inak IP (nie „Config“)
+        // Ciferník až keď je zdroj skutočne pripravený – inak IP (nie „Config“/Sync)
         if (diaNeedsSourceSetup()) {
+            forceFetch = false;
             showConnectedPortalHint();
         } else {
+            forceFetch = true;
             restore_ui_after_wifi();
         }
         Serial.println("[wifi] param saved, bez restartu");
@@ -1729,18 +1732,27 @@ void diaWifiMaintain(uint32_t currentMillis) {
     if (diaFetchBusy()) return;
 
     static uint32_t wifiDownSince = 0;
-    static uint32_t lastSetupHint = 0;
+    static String lastHintIp;
     bool connected = (WiFi.status() == WL_CONNECTED);
     if (connected) {
         if (!wifi_was_connected || wifiDownSince != 0) {
-            forceFetch = true;
             autoSaveNetwork();
-            if (diaNeedsSourceSetup()) showConnectedPortalHint();
+            if (diaNeedsSourceSetup()) {
+                forceFetch = false;
+                showConnectedPortalHint();
+                lastHintIp = WiFi.localIP().toString();
+            } else {
+                forceFetch = true;
+            }
         }
-        // Bez zdroja dát držať IP na displeji (občas obnoviť, keby sa zmenila)
-        if (diaNeedsSourceSetup() && (currentMillis - lastSetupHint > 15000UL)) {
-            lastSetupHint = currentMillis;
-            showConnectedPortalHint();
+        // Obnoviť hint len ak sa zmenila IP – nie periodicky (Sync by blikal)
+        if (diaNeedsSourceSetup()) {
+            forceFetch = false;
+            String ip = WiFi.localIP().toString();
+            if (ip.length() && ip != "0.0.0.0" && ip != lastHintIp) {
+                lastHintIp = ip;
+                showConnectedPortalHint();
+            }
         }
         wifiDownSince = 0;
         wifi_was_connected = true;

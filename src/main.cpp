@@ -108,10 +108,14 @@ void loop() {
 
     diaFetchPoll();
     diaFetchWatchdog(currentMillis);
-    if (!diaFetchBusy() && (forceFetch || (currentMillis - lastUpdate > updateInterval))) {
+    // Kým nie je zdroj, nechaj IP návod – Sync/Config by ho prepísali
+    if (!diaWifiNeedsSetupHint() && !diaFetchBusy() &&
+        (forceFetch || (currentMillis - lastUpdate > updateInterval))) {
         forceFetch = false;
         lastUpdate = currentMillis;
         diaFetchRequest();
+    } else if (diaWifiNeedsSetupHint()) {
+        forceFetch = false;
     }
 
     {

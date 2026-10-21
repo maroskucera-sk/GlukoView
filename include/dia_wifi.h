@@ -39,3 +39,5 @@ bool diaWifiEnsureConnected();
 void diaWifiProcess();
 void diaWifiSavePortalConfigIfNeeded();
 void diaWifiMaintain(uint32_t currentMillis);
+/** True = na displeji má ostať IP návod, fetch ešte nespúšťať. */
+bool diaWifiNeedsSetupHint();

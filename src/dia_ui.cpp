@@ -1047,10 +1047,14 @@ static void toggle_display_mode_cb(lv_event_t *e) {
     display_mode = (display_mode >= 2) ? 1 : 2;
     preferences.putUChar("disp_mode", display_mode);
     diaConfigSaveProfiles();
+    if (lbl_btn_mode) {
+        lv_label_set_text(lbl_btn_mode, S(display_mode >= 2 ? Str::ModeBtn2 : Str::ModeBtn1));
+    }
     diaUiFocusShownSlot();
     diaUiApplyDisplayMode();
     diaUiRefreshChildBtn();
-    forceFetch = true;
+    // Počas IP setupu nespúšťať fetch (prepísal by Sync)
+    if (!s_bootUiLock) forceFetch = true;
 #else
     (void)e;
 #endif
@@ -1547,6 +1551,7 @@ void updateDeltaLabel() {
 }
 
 void updateStaleAndErrorVisuals() {
+    if (s_bootUiLock) return;
     if (label_status) {
         const int snoozeRem = diaAudioSnoozeRemainMin(millis());
         if (diaUiIsSplitMode()) {
@@ -1686,6 +1691,8 @@ static void refreshSplitSparklines() {
 }
 
 void updateAgeDisplay() {
+    // Počas IP návodu nesmie Sync prepísať label_age / label_glycemia
+    if (s_bootUiLock) return;
     if (last_reading_timestamp == 0) {
         data_is_stale = false;
         if (label_age) lv_label_set_text(label_age, S(Str::Sync));
@@ -1731,6 +1738,7 @@ void applyGlucoseReading(float mmol, const String &trendSymbol, long unix_ts,
         diaFetchEnqueueSuccess(mmol, trendSymbol.c_str(), unix_ts, hasSourceDelta, sourceDeltaMmol);
         return;
     }
+    if (s_bootUiLock) return;
 
     int slot = diaFetchCurrentSlot();
     glucoseStoreReadingSlot(slot, mmol, trendSymbol, unix_ts, hasSourceDelta, sourceDeltaMmol);
@@ -1756,6 +1764,7 @@ void markFetchError(FetchError err) {
     }
     slotReadings[slot].err = err;
     last_fetch_error = err;
+    if (s_bootUiLock) return;
     diaUiUpdateSlotFace(slot);
     updateStaleAndErrorVisuals();
     lv_obj_invalidate(lv_scr_act());
@@ -1965,6 +1974,9 @@ void diaUiUpdateSlotFace(int slot) {
 
 void diaUiApplyDisplayMode() {
 #if defined(DIA_BOARD_WS_3_5)
+    if (lbl_btn_mode) {
+        lv_label_set_text(lbl_btn_mode, S(display_mode >= 2 ? Str::ModeBtn2 : Str::ModeBtn1));
+    }
     if (s_bootUiLock) {
         clearMainOverlays();
         if (arc_bg) lv_obj_add_flag(arc_bg, LV_OBJ_FLAG_HIDDEN);
