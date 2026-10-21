@@ -199,6 +199,8 @@ enum class Str : uint16_t {
     VolHigh,
     OrientUsbR,
     OrientUsbL,
+    /** Po WiFi: "Otvor v telefóne:\n%s\n..." – %s = IP */
+    BootPortalHint,
     StrCount
 };
 

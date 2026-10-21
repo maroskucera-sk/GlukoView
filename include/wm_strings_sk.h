@@ -64,7 +64,7 @@ const char HTTP_FORM_PARAM_HEAD[]  PROGMEM = "<hr><br/>";
 const char HTTP_FORM_PARAM[]       PROGMEM = "<br/><input id='{i}' name='{n}' maxlength='{l}' value='{v}' {c}>\n";
 
 const char HTTP_SCAN_LINK[]        PROGMEM = "<br/><form action='/wifi?refresh=1' method='POST'><button name='refresh' value='1'>Obnoviť zoznam</button></form>";
-const char HTTP_SAVED[]            PROGMEM = "<div class='msg'>Ukladám prihlasovacie údaje<br/>Pripájam sa k sieti.<br />Ak sa nepodarí, znova sa pripoj k GlukoView.</div>";
+const char HTTP_SAVED[]            PROGMEM = "<div class='msg'>Ukladám WiFi a reštartujem.<br/>Potom sa pripoj na <b>rovnakú WiFi</b> ako monitor.<br/>Na displeji uvidíš IP adresu — otvor ju v prehliadači a nastav zdroj dát.<br/>Ak sa nepodarí, znova sa pripoj k GlukoView.</div>";
 const char HTTP_PARAMSAVED[]       PROGMEM = "<div class='msg S'>Uložené<br/></div>";
 const char HTTP_END[]              PROGMEM = "</div></body></html>";
 const char HTTP_ERASEBTN[]         PROGMEM = "<br/><form action='/erase' method='get'><button class='D'>Vymazať WiFi nastavenia</button></form>";

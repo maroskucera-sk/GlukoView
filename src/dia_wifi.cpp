@@ -78,6 +78,32 @@ void saveConfigCallback() {
     if (wm.server && String(wm.server->uri()) == "/paramsave") s_portalRestart = false;
 }
 
+/** Zdroj ešte nie je nastavený / wizard nedokončený → na displeji držať IP návod. */
+static bool diaNeedsSourceSetup() {
+    if (profiles[0].dsSource.length() == 0) return true;
+    if (preferences.isKey("wiz") && preferences.getUChar("wiz", 255) != 255) return true;
+    return false;
+}
+
+static void showConnectedPortalHint() {
+    char detail[128];
+    snprintf(detail, sizeof(detail), S(Str::BootPortalHint), WiFi.localIP().toString().c_str());
+    showBootStatus(S(Str::BootConnected), detail);
+}
+
+/** Captive portal / úvod: v AP rovno WiFi výber, v STA rovno nastavenie zdroja. */
+static void handlePortalHome() {
+    if (!wm.server) return;
+    const wifi_mode_t mode = WiFi.getMode();
+    if (mode == WIFI_AP || mode == WIFI_AP_STA) {
+        wm.server->sendHeader(F("Location"), F("/wifi"), true);
+        wm.server->send(302, F("text/plain"), F(""));
+        return;
+    }
+    wm.server->sendHeader(F("Location"), F("/param"), true);
+    wm.server->send(302, F("text/plain"), F(""));
+}
+
 // ==========================================
 // Jednotný zoznam sietí (aktuálna + zálohy, bez duplikátov)
 // NVS: wifi_ssid/wifi_pwd = MRU (posledná úspešná)
@@ -583,6 +609,12 @@ static void handleDiaParamPage() {
         "var el=document.getElementById(pfx+'_'+k);"
         "if(el)el.style.display=(k===v)?'block':'none';"
         "});}"
+        "function diaMode(v){"
+        "var b=document.getElementById('userB');"
+        "if(b)b.style.display=(v==='2')?'block':'none';"
+        "var a=document.getElementById('userATitle');"
+        "if(a)a.style.display=(v==='2')?'block':'none';"
+        "}"
         "</script></head><body>"
         "<div class=brand>Gluko<span>View</span></div>"
         "<p class=sub>");
@@ -605,7 +637,7 @@ static void handleDiaParamPage() {
     if (!diaBoardIsRound()) {
         page += F("<label>");
         page += S(Str::PortalDispMode);
-        page += F("</label><select name=disp_mode>");
+        page += F("</label><select name=disp_mode onchange=\"diaMode(this.value)\">");
         page += diaSelOpt("1", S(Str::PortalMode1), modeCur);
         page += diaSelOpt("2", S(Str::PortalMode2), modeCur);
         page += F("</select>");
@@ -624,9 +656,11 @@ static void handleDiaParamPage() {
     page += diaSelOpt("nie", S(Str::PortalTlsNo), tls);
     page += F("</select>");
 
-    // 3.5B: „Používateľ A“ + meno (na round meno nikde neukazujeme)
+    // 3.5B: nadpis „Používateľ A“ len v dual režime
     if (!diaBoardIsRound()) {
-        page += F("<h3>");
+        page += F("<h3 id=userATitle");
+        if (modeCur != "2") page += F(" style=display:none");
+        page += F(">");
         page += S(Str::PortalUserA);
         page += F("</h3>");
         diaField(page, S(Str::PortalName), "p0_name",
@@ -654,8 +688,10 @@ static void handleDiaParamPage() {
     diaField(page, S(Str::PortalCrit), "t_crit", String(crit0));
 
     if (!diaBoardIsRound()) {
-        // —— User B (len 3.5B dual) ——
-        page += F("<h3 class=b>");
+        // User B len pri režime 2 — JS diaMode() prepína viditeľnosť
+        page += F("<div id=userB");
+        if (modeCur != "2") page += F(" style=display:none");
+        page += F("><h3 class=b>");
         page += S(Str::PortalUserB);
         page += F("</h3>");
         diaField(page, S(Str::PortalName), "p1_name",
@@ -683,6 +719,7 @@ static void handleDiaParamPage() {
         diaField(page, S(Str::PortalLow), "p1_t_low", String(low1));
         diaField(page, S(Str::PortalHigh), "p1_t_high", String(high1));
         diaField(page, S(Str::PortalCrit), "p1_t_crit", String(crit1));
+        page += F("</div>");
     }
 
     page += F("<button type=submit>");
@@ -691,7 +728,11 @@ static void handleDiaParamPage() {
     page += S(Str::PortalBack);
     page += F("</a> | <a href=/nets>");
     page += S(Str::PortalSavedWifi);
-    page += F("</a></p></body></html>");
+    page += F("</a></p>");
+    if (!diaBoardIsRound()) {
+        page += F("<script>diaMode(document.querySelector('[name=disp_mode]').value);</script>");
+    }
+    page += F("</body></html>");
 
     Serial.printf("[portal] /param page len=%u freeheap=%u\n", (unsigned)page.length(), (unsigned)ESP.getFreeHeap());
     wm.server->send(200, "text/html; charset=utf-8", page);
@@ -1212,6 +1253,8 @@ static void bindWmWebServer() {
     if (!wm.server) return;
     const char *hdrs[] = {"Cookie"};
     wm.server->collectHeaders(hdrs, 1);
+    // Prepíše WM root: captive portal → /wifi, po pripojení → /param
+    wm.server->on("/", HTTP_GET, handlePortalHome);
     wm.server->on("/pin", HTTP_GET, handlePinGet);
     wm.server->on("/pin", HTTP_POST, handlePinPost);
     wm.server->addHandler(new DiaPinGate());
@@ -1441,11 +1484,23 @@ static void restore_ui_after_wifi() {
     configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
 }
 
+/** Po WiFi: ak chýba zdroj, držať návod s IP; inak bežný ciferník. */
+static void afterWifiConnectedUi() {
+    configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
+    if (diaNeedsSourceSetup()) {
+        showConnectedPortalHint();
+        return;
+    }
+    showBootStatus(S(Str::BootConnected), S(Str::Loading));
+    restore_ui_after_wifi();
+}
+
 bool diaWifiEnsureConnected() {
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false); // riadime sami cez zoznam sietí
     diaWifiSetupManager();
     diaWifiAddParameters();
+    wm.setCaptivePortalEnable(true);
 
     WifiCred nets[kMaxWifiNets];
     int savedCount = gatherWifiCreds(nets, kMaxWifiNets);
@@ -1454,10 +1509,9 @@ bool diaWifiEnsureConnected() {
     // Opakuj: STA všetky siete → (ak treba) AP s timeoutom → znova STA
     for (int cycle = 0; cycle < 6; cycle++) {
         if (diaWifiTryConnect()) {
-            showBootStatus(S(Str::BootConnected), S(Str::Loading));
             autoSaveNetwork();
             wifi_was_connected = true;
-            restore_ui_after_wifi();
+            afterWifiConnectedUi();
             refreshPortalSavedNetsHtml();
             wm.startWebPortal();
             return true;
@@ -1470,6 +1524,7 @@ bool diaWifiEnsureConnected() {
         wm.setAPStaticIPConfig(IPAddress(10, 0, 0, 1), IPAddress(10, 0, 0, 1), IPAddress(255, 255, 255, 0));
         wm.setConfigPortalBlocking(true);
         wm.setSaveConnect(true);
+        wm.setCaptivePortalEnable(true);
         // Ak už máme uložené siete – timeout, potom znova skús STA (presun do dielne)
         // Prvé nastavenie (0 sietí) – čakaj dlhšie
         wm.setConfigPortalTimeout(savedCount > 0 ? kPortalTimeoutSec : 0);
@@ -1479,7 +1534,7 @@ bool diaWifiEnsureConnected() {
             autoSaveNetwork();
             Serial.printf("Portal OK, SSID='%s'\n", WiFi.SSID().c_str());
             wifi_was_connected = true;
-            restore_ui_after_wifi();
+            afterWifiConnectedUi();
             refreshPortalSavedNetsHtml();
             wm.startWebPortal();
             return true;
@@ -1514,6 +1569,11 @@ void diaWifiSavePortalConfigIfNeeded() {
     } else if (custom_disp_mode) {
         int m = String(custom_disp_mode->getValue()).toInt();
         display_mode = (m >= 2) ? 2 : 1;
+    }
+    // Jedna osoba: vypnúť B, aby sa polia nevracali „duchmi“
+    if (display_mode < 2) {
+        profiles[1].dsSource = "off";
+        if (custom_p1_source) wizSet(custom_p1_source, "off");
     }
     if (custom_p0_name) profiles[0].name = custom_p0_name->getValue();
     profiles[0].dsSource = custom_source->getValue();
@@ -1606,6 +1666,8 @@ void diaWifiSavePortalConfigIfNeeded() {
         if (!diaBoardIsRound() && display_mode >= 2) diaConfigPushSlot(1);
         forceFetch = true;
         diaUiApplyDisplayMode();
+        // Po nastavení zdroja zruš IP návod a ukáž ciferník
+        restore_ui_after_wifi();
         Serial.println("[wifi] param saved, bez restartu");
         return;
     }
