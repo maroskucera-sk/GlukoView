@@ -242,7 +242,7 @@ void delay(unsigned long ms) {
             fprintf(stderr, "language label missing\n");
             exit(1);
         }
-        lv_event_send(lv_obj_get_parent(lbl), LV_EVENT_CLICKED, nullptr);
+        lv_event_send(lv_obj_get_parent(lbl), LV_EVENT_SHORT_CLICKED, nullptr);
     }
     if (!g_lang_saved && g_lang_frames > 100) {
         fprintf(stderr, "language screen did not draw\n");

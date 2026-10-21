@@ -3136,6 +3136,7 @@ static void lang_pick_cb(lv_event_t *e) {
 bool diaUiRunLanguageSetup() {
     if (!diaI18nNeedsSetup()) return false;
     s_lang_pick = -1;
+    s_bootUiLock = true;
 
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(overlay, screenWidth, screenHeight);
@@ -3144,6 +3145,7 @@ bool diaUiRunLanguageSetup() {
     lv_obj_set_style_border_width(overlay, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(overlay, 8, LV_PART_MAIN);
     lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(overlay, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_move_foreground(overlay);
 
@@ -3151,6 +3153,7 @@ bool diaUiRunLanguageSetup() {
     lv_label_set_text(title, "Language / Jazyk");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(title, diaBoardIsRound() ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+    lv_obj_clear_flag(title, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, diaBoardIsRound() ? 14 : 8);
 
     const int n = diaI18nCount();
@@ -3163,16 +3166,23 @@ bool diaUiRunLanguageSetup() {
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x1a3040), LV_PART_MAIN);
         lv_obj_set_style_radius(btn, 8, LV_PART_MAIN);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, startY + i * (btnH + gap));
-        lv_obj_add_event_cb(btn, lang_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        // SHORT_CLICKED ako v menu; label nesmie prebrať touch
+        lv_obj_add_event_cb(btn, lang_pick_cb, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn);
         lv_label_set_text(lbl, diaI18nNativeNameAt(i));
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
         lv_obj_set_style_text_font(lbl, diaBoardIsRound() ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+        lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_center(lbl);
     }
 
+    // Bez lv_tick_inc LVGL nevie detegovať click (press/release timing)
+    uint32_t lastTick = millis();
     while (s_lang_pick < 0) {
+        uint32_t now = millis();
+        lv_tick_inc(now - lastTick);
+        lastTick = now;
         lv_timer_handler();
         delay(5);
     }
@@ -3180,6 +3190,7 @@ bool diaUiRunLanguageSetup() {
     diaI18nSet((DiaLang)s_lang_pick);
     diaI18nMarkSetupDone();
     lv_obj_del(overlay);
+    s_bootUiLock = false;
     diaUiApplyLanguage();
     return true;
 }
