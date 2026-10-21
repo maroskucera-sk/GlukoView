@@ -268,6 +268,7 @@ static void diaUiRequestManualFetch() {
 }
 
 static void clearMainOverlays();
+static void diaUiHideSplash();
 static void showInfoValuesLayout();
 static lv_obj_t *create_menu_btn(lv_obj_t *parent, const char *text, lv_event_cb_t cb, int user_data,
                                  uint32_t color, int btn_w = 0);
@@ -739,6 +740,8 @@ static void clearMainOverlays() {
 
 void showBootStatus(const char *title, const char *detail) {
     s_bootUiLock = true;
+    // Logo inak zostane nad textom: počas blokujúceho WiFi nebeží loop → timer 2.2 s sa nespustí
+    diaUiHideSplash();
     clearMainOverlays();
 
     // Skryť zvyšok ciferníka – žiadne prekrytie s cache glykémiou / trendom / slot B
@@ -2297,11 +2300,14 @@ void diaUiUpdateArcColors(uint32_t currentMillis) {
 
 static lv_obj_t *splash_obj = nullptr;
 
+static void diaUiHideSplash() {
+    if (!splash_obj) return;
+    lv_obj_del(splash_obj);
+    splash_obj = nullptr;
+}
+
 static void splash_hide_cb(lv_timer_t *timer) {
-    if (splash_obj) {
-        lv_obj_del(splash_obj);
-        splash_obj = nullptr;
-    }
+    diaUiHideSplash();
     lv_timer_del(timer);
 }
 
@@ -3137,6 +3143,7 @@ bool diaUiRunLanguageSetup() {
     if (!diaI18nNeedsSetup()) return false;
     s_lang_pick = -1;
     s_bootUiLock = true;
+    diaUiHideSplash();
 
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(overlay, screenWidth, screenHeight);
