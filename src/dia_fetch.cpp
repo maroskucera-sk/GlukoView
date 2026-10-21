@@ -1,0 +1,1179 @@
+#include "dia_fetch.h"
+#include "dia_carelink.h"
+#include "dia_config.h"
+#include "dia_glucose.h"
+#include "dia_tls.h"
+#include "dia_ui.h"
+#include "dia_types.h"
+
+#include <HTTPClient.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include "mbedtls/sha256.h"
+#include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
+#include <esp_idf_version.h>
+#include <time.h>
+#include <string.h>
+
+// Dual Libre+NS: mbedTLS SHA buffer ide z interného DRAM – po veľkom JSON často chýba.
+static void diaFetchLogHeap(const char *tag) {
+    const unsigned freeH = (unsigned)ESP.getFreeHeap();
+    const unsigned intH = (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const unsigned psH = (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    Serial.printf("[heap] %s free=%u int=%u psram=%u\n", tag, freeH, intH, psH);
+    esp_rom_printf("[heap] %s free=%u int=%u psram=%u\n", tag, freeH, intH, psH);
+}
+
+static void diaFetchBreathe(unsigned ms) {
+    delay(ms);
+    yield();
+}
+
+// Watchdog zvýši epoch → task nedokončí zvyšné sloty (žiadne prekryté TLS)
+static volatile uint32_t s_fetchEpoch = 0;
+static uint32_t s_fetchRunEpoch = 0;
+
+static bool diaFetchAborted() {
+    return s_fetchRunEpoch != s_fetchEpoch;
+}
+
+static void sha256_hex(const String &input, char *out_hex /* min 65 */) {
+    unsigned char hash[32];
+    mbedtls_sha256((const unsigned char *)input.c_str(), input.length(), hash, 0);
+    for (int i = 0; i < 32; i++) {
+        sprintf(out_hex + (i * 2), "%02x", hash[i]);
+    }
+    out_hex[64] = '\0';
+}
+
+static String getLibreBaseUrl(String region) {
+    region.toLowerCase();
+    region.trim();
+    if (region.length() == 0 || region == "global" || region == "us") {
+        return "https://api.libreview.io";
+    }
+    return "https://api-" + region + ".libreview.io";
+}
+
+// Civil dátum (UTC) → dni od 1970-01-01 (Howard Hinnant)
+static int64_t daysFromCivil(int y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + yoe / 400 + doy;
+    return (int64_t)era * 146097 + (int64_t)doe - 719468;
+}
+
+/** UTC civil → unix timestamp bez zásahu do systémovej TZ. */
+static time_t timegmUtc(int year, int month, int day, int hour, int minute, int sec) {
+    if (month < 1 || month > 12 || day < 1 || day > 31) return 0;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || sec < 0 || sec > 60) return 0;
+    const int64_t days = daysFromCivil(year, (unsigned)month, (unsigned)day);
+    const int64_t secs = days * 86400LL + hour * 3600LL + minute * 60LL + sec;
+    return (time_t)secs;
+}
+
+// FactoryTimestamp Libre je UTC: "5/21/2022 1:38:50 PM"
+static long parseLibreFactoryTimestamp(const char *s) {
+    if (!s || !*s) return 0;
+    int month = 0, day = 0, year = 0, hour = 0, minute = 0, sec = 0;
+    char ampm[4] = {0};
+    int n = sscanf(s, "%d/%d/%d %d:%d:%d %3s", &month, &day, &year, &hour, &minute, &sec, ampm);
+    if (n < 6) return 0;
+
+    if (ampm[0] == 'P' || ampm[0] == 'p') {
+        if (hour != 12) hour += 12;
+    } else if (ampm[0] == 'A' || ampm[0] == 'a') {
+        if (hour == 12) hour = 0;
+    }
+
+    return (long)timegmUtc(year, month, day, hour, minute, sec);
+}
+
+static void addLibreHeaders(HTTPClient &http, bool withAuth) {
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("product", "llu.android");
+    http.addHeader("version", "4.16.0");
+    http.addHeader("cache-control", "no-cache");
+    http.addHeader("pragma", "no-cache");
+    if (withAuth && libre_token.length() > 0) {
+        http.addHeader("Authorization", "Bearer " + libre_token);
+        if (libre_account_hash.length() > 0) {
+            http.addHeader("Account-Id", libre_account_hash);
+        }
+    }
+}
+
+static bool libreLogin() {
+    if (libreUser.length() == 0 || librePwd.length() == 0) return false;
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        String base = getLibreBaseUrl(libreRegion);
+        String url = base + "/llu/auth/login";
+
+        WiFiClientSecure client;
+        configureTlsClient(client, tls_insecure);
+        HTTPClient http;
+        http.setTimeout(15000);
+        http.begin(client, url);
+        addLibreHeaders(http, false);
+
+        JsonDocument body;
+        body["email"] = libreUser;
+        body["password"] = librePwd;
+        String bodyStr;
+        serializeJson(body, bodyStr);
+
+        int httpCode = http.POST(bodyStr);
+        String payload = (httpCode > 0) ? http.getString() : "";
+        http.end();
+
+        if (httpCode != HTTP_CODE_OK) {
+            Serial.printf("Libre login HTTP %d\n", httpCode);
+            return false;
+        }
+
+        JsonDocument doc;
+        if (deserializeJson(doc, payload)) return false;
+
+        JsonObject data = doc["data"].as<JsonObject>();
+        if (data.isNull()) return false;
+
+        if (data["redirect"] == true) {
+            String newRegion = data["region"] | "";
+            if (newRegion.length() > 0) {
+                libreRegion = newRegion;
+                preferences.putString("llu_reg", libreRegion);
+                Serial.printf("Libre redirect -> region %s\n", libreRegion.c_str());
+                continue;
+            }
+            return false;
+        }
+
+        const char *stepType = data["step"]["type"] | "";
+        if (strlen(stepType) > 0) {
+            Serial.printf("Libre login requires step: %s\n", stepType);
+            return false;
+        }
+
+        const char *token = data["authTicket"]["token"] | "";
+        const char *userId = data["user"]["id"] | "";
+        if (strlen(token) == 0 || strlen(userId) == 0) return false;
+
+        libre_token = String(token);
+        char hash[65];
+        sha256_hex(String(userId), hash);
+        libre_account_hash = String(hash);
+        libre_patient_id = "";
+        return true;
+    }
+    return false;
+}
+
+static String libreNorm(String s) {
+    s.trim();
+    s.toLowerCase();
+    // zjednoduš porovnanie mien (medzery)
+    while (s.indexOf("  ") >= 0) s.replace("  ", " ");
+    return s;
+}
+
+static void libreRememberPatients(JsonArray arr) {
+    String list;
+    size_t n = arr.size();
+    if (n > 8) n = 8;
+    for (size_t i = 0; i < n; i++) {
+        String id = arr[i]["patientId"] | "";
+        String fn = arr[i]["firstName"] | "";
+        String ln = arr[i]["lastName"] | "";
+        id.trim();
+        fn.trim();
+        ln.trim();
+        if (id.length() == 0) continue;
+        String name = fn;
+        if (ln.length()) {
+            if (name.length()) name += " ";
+            name += ln;
+        }
+        if (name.length() == 0) name = id;
+        name.replace("\t", " ");
+        name.replace("\n", " ");
+        name.replace("\r", " ");
+        if (list.length()) list += "\n";
+        list += id;
+        list += "\t";
+        list += name;
+    }
+    if (list.length() == 0 || list == libre_patient_list) return;
+    libre_patient_list = list;
+    preferences.putString("llu_pats", list);
+}
+
+/** Vyber index connection podľa preferencie (patientId, meno alebo číslo 1, 2…). -1 = nič. */
+static int libreFindConnectionIndex(JsonArray arr, const String &prefIn) {
+    const size_t n = arr.size();
+    if (n == 0) return -1;
+
+    for (size_t i = 0; i < n; i++) {
+        const char *pid = arr[i]["patientId"] | "";
+        const char *fn = arr[i]["firstName"] | "";
+        const char *ln = arr[i]["lastName"] | "";
+        Serial.printf("Libre conn[%u]: %s %s id=%s\n", (unsigned)i, fn, ln, pid);
+    }
+
+    libreRememberPatients(arr);
+
+    if (n == 1) return 0;
+
+    String pref = libreNorm(prefIn);
+    if (pref.length() == 0) {
+        Serial.println("Libre: viac pacientov, preferencia prazdna -> beriem [0]");
+        return 0;
+    }
+
+    bool digits = true;
+    for (unsigned i = 0; i < pref.length(); i++) {
+        if (pref[i] < '0' || pref[i] > '9') digits = false;
+    }
+    if (digits && pref.length() <= 2) {
+        int pick = pref.toInt();
+        if (pick >= 1 && pick <= (int)n) return pick - 1;
+    }
+
+    // 1) Presné patientId
+    for (size_t i = 0; i < n; i++) {
+        String pid = arr[i]["patientId"] | "";
+        if (libreNorm(pid) == pref) return (int)i;
+    }
+
+    // 2) Meno: "Jan", "Novak", "Jan Novak"
+    for (size_t i = 0; i < n; i++) {
+        String fn = libreNorm(arr[i]["firstName"] | "");
+        String ln = libreNorm(arr[i]["lastName"] | "");
+        String full = fn;
+        if (fn.length() && ln.length()) full += " ";
+        full += ln;
+
+        if (pref == fn || pref == ln || pref == full) return (int)i;
+        if (fn.length() > 0 && pref.indexOf(fn) >= 0 && ln.length() > 0 && pref.indexOf(ln) >= 0) {
+            return (int)i;
+        }
+        if (full.length() > 0 && (full.indexOf(pref) >= 0 || pref.indexOf(full) >= 0)) {
+            return (int)i;
+        }
+    }
+
+    Serial.printf("Libre: preferencia '%s' nenajdena -> beriem [0]\n", prefIn.c_str());
+    return 0;
+}
+
+// 1 = OK, 0 = auth (treba re-login), -1 = sieť/DNS (token nechať)
+static int libreFetchConnections() {
+    float mgdl = 0.0f;
+    int trendArrow = 0;
+    long ts = 0;
+    bool hasDeltaField = false;
+    float deltaFieldMgdl = 0.0f;
+    size_t connCount = 0;
+
+    {
+        String base = getLibreBaseUrl(libreRegion);
+        String url = base + "/llu/connections";
+        diaFetchLogHeap("libre-pre");
+        int httpCode = -1;
+        String payload;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (diaFetchAborted()) return -1;
+            if (attempt > 0) diaFetchBreathe(400);
+            if (ESP.getFreeHeap() < 70000) {
+                Serial.printf("Libre connections: low heap %u – cakam\n",
+                              (unsigned)ESP.getFreeHeap());
+                diaFetchBreathe(600);
+            }
+            WiFiClientSecure client;
+            configureTlsClient(client, tls_insecure);
+            HTTPClient http;
+            http.setTimeout(10000);
+            if (!http.begin(client, url)) {
+                Serial.println("Libre connections: begin fail");
+                continue;
+            }
+            addLibreHeaders(http, true);
+            httpCode = http.GET();
+            payload = (httpCode > 0) ? http.getString() : "";
+            http.end();
+            if (httpCode == HTTP_CODE_OK) break;
+            if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403) break;
+            Serial.printf("Libre connections HTTP %d (pokus %d/2)\n", httpCode, attempt + 1);
+        }
+
+        if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403) {
+            Serial.println("Libre connections: auth fail");
+            return 0;
+        }
+        if (httpCode != HTTP_CODE_OK) {
+            Serial.printf("Libre connections: network fail HTTP %d\n", httpCode);
+            return -1;
+        }
+
+        JsonDocument doc;
+        if (deserializeJson(doc, payload)) {
+            Serial.println("Libre connections: JSON fail");
+            return -1;
+        }
+
+        JsonArray arr = doc["data"].as<JsonArray>();
+        if (arr.isNull() || arr.size() == 0) {
+            Serial.println("Libre: ziadne connections (follower?)");
+            return 0;
+        }
+
+        connCount = arr.size();
+        int idx = libreFindConnectionIndex(arr, libre_patient_pref);
+        if (idx < 0) return 0;
+
+        JsonObject conn = arr[idx].as<JsonObject>();
+        libre_patient_id = conn["patientId"] | "";
+
+        const char *fn = conn["firstName"] | "";
+        const char *ln = conn["lastName"] | "";
+        Serial.printf("Libre vybrany pacient [%d]: %s %s (%s)\n",
+                      idx, fn, ln, libre_patient_id.c_str());
+
+        JsonObject gm = conn["glucoseMeasurement"].as<JsonObject>();
+        if (gm.isNull()) {
+            Serial.println("Libre: glucoseMeasurement prazdne");
+            return -1;
+        }
+
+        mgdl = gm["ValueInMgPerDl"] | 0.0f;
+        if (mgdl <= 0.0f) {
+            Serial.println("Libre: ValueInMgPerDl=0");
+            return -1;
+        }
+
+        trendArrow = gm["TrendArrow"] | 0;
+        const char *factoryTs = gm["FactoryTimestamp"] | "";
+        ts = parseLibreFactoryTimestamp(factoryTs);
+
+        if (!gm["Delta"].isNull()) {
+            hasDeltaField = true;
+            deltaFieldMgdl = gm["Delta"].as<float>();
+        }
+    } // uvoľni TLS client + JSON pred graph requestom
+
+    if (libre_patient_pref.length() == 0 && connCount == 1 && libre_patient_id.length() > 0) {
+        libre_patient_pref = libre_patient_id;
+        preferences.putString("libre_pref", libre_patient_pref);
+    }
+
+    bool hasSrcDelta = false;
+    float srcDeltaMmol = 0.0f;
+
+    if (hasDeltaField) {
+        srcDeltaMmol = mgdl_to_mmol(deltaFieldMgdl);
+        hasSrcDelta = true;
+    }
+
+    // Graph = sparkline. Skip len pri low heap / abort (I2S už uvoľnené → dual zvládne).
+    const uint32_t heapNow = ESP.getFreeHeap();
+    if (libre_patient_id.length() > 0 && (heapNow < 70000 || diaFetchAborted())) {
+        Serial.printf("Libre graph: skip (heap=%u)\n", (unsigned)heapNow);
+    } else if (libre_patient_id.length() > 0) {
+        String gurl = getLibreBaseUrl(libreRegion) + "/llu/connections/" + libre_patient_id + "/graph";
+        int gcode = -1;
+        String gpayload;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (diaFetchAborted()) break;
+            if (attempt > 0) diaFetchBreathe(400);
+            else diaFetchBreathe(200);
+            WiFiClientSecure gclient;
+            configureTlsClient(gclient, tls_insecure);
+            HTTPClient ghttp;
+            ghttp.setTimeout(10000);
+            ghttp.begin(gclient, gurl);
+            addLibreHeaders(ghttp, true);
+            gcode = ghttp.GET();
+            gpayload = (gcode > 0) ? ghttp.getString() : "";
+            ghttp.end();
+            if (gcode == HTTP_CODE_OK) break;
+        }
+        if (gcode != HTTP_CODE_OK) {
+            Serial.printf("Libre graph HTTP %d (hodnota z connections ostava)\n", gcode);
+        }
+
+        if (gcode == HTTP_CODE_OK) {
+            // Filter: len hodnoty – graph JSON je veľký
+            JsonDocument filter;
+            filter["data"]["graphData"][0]["ValueInMgPerDl"] = true;
+            filter["data"]["graphData"][0]["Value"] = true;
+            JsonDocument gdoc;
+            if (!deserializeJson(gdoc, gpayload, DeserializationOption::Filter(filter))) {
+                gpayload = "";
+                JsonArray gd = gdoc["data"]["graphData"].as<JsonArray>();
+                if (!gd.isNull() && gd.size() >= 1) {
+                    size_t n = gd.size();
+                    if (!hasSrcDelta && n >= 2) {
+                        float newest = gd[n - 1]["ValueInMgPerDl"] | gd[n - 1]["Value"] | 0.0f;
+                        float prev = gd[n - 2]["ValueInMgPerDl"] | gd[n - 2]["Value"] | 0.0f;
+                        if (newest > 0.0f && prev > 0.0f) {
+                            srcDeltaMmol = mgdl_to_mmol(newest) - mgdl_to_mmol(prev);
+                            hasSrcDelta = true;
+                        }
+                    }
+                    // graphData je oldest→newest; uložíme posledných N
+                    size_t start = (n > DIA_HISTORY_MAX) ? (n - DIA_HISTORY_MAX) : 0;
+                    float histAsc[DIA_HISTORY_MAX];
+                    int histN = 0;
+                    for (size_t i = start; i < n && histN < DIA_HISTORY_MAX; i++) {
+                        float v = gd[i]["ValueInMgPerDl"] | gd[i]["Value"] | 0.0f;
+                        if (v > 0.0f) histAsc[histN++] = mgdl_to_mmol(v);
+                    }
+                    if (histN > 0) {
+                        // SetNewestFirst očakáva newest-first → otočíme
+                        float histNf[DIA_HISTORY_MAX];
+                        for (int i = 0; i < histN; i++) histNf[i] = histAsc[histN - 1 - i];
+                        glucoseHistorySetNewestFirst(histNf, histN);
+                    }
+                }
+            }
+        }
+    }
+
+    applyGlucoseReading(mgdl_to_mmol(mgdl), getLibreTrendSymbol(trendArrow), ts,
+                        hasSrcDelta, srcDeltaMmol);
+    return 1;
+}
+
+void fetchLibre() {
+    if (libreUser.length() == 0 || librePwd.length() == 0) {
+        markFetchError(FetchError::Config);
+        return;
+    }
+
+    if (libre_token.length() == 0 || libre_account_hash.length() == 0) {
+        if (!libreLogin()) {
+            markFetchError(FetchError::Auth);
+            return;
+        }
+    }
+
+    int r = libreFetchConnections();
+    if (r == 1) return;
+    if (r < 0) {
+        // DNS/TLS blip – NEmazať token (to spôsobovalo falošný „Libre down“ v duali)
+        markFetchError(FetchError::Network);
+        return;
+    }
+
+    libre_token = "";
+    libre_account_hash = "";
+    if (!libreLogin()) {
+        markFetchError(FetchError::Auth);
+        return;
+    }
+    r = libreFetchConnections();
+    if (r == 1) return;
+    if (r < 0) {
+        markFetchError(FetchError::Network);
+        return;
+    }
+
+    markFetchError(FetchError::Empty);
+}
+
+static String stripJsonQuotes(String s) {
+    s.trim();
+    if (s.startsWith("\"")) s = s.substring(1);
+    if (s.endsWith("\"")) s = s.substring(0, s.length() - 1);
+    return s;
+}
+
+static bool isInvalidDexcomUuid(const String &id) {
+    if (id.length() == 0) return true;
+    return id == "00000000-0000-0000-0000-000000000000";
+}
+
+static String getDexcomBaseUrl(String region) {
+    region.toLowerCase();
+    region.trim();
+    if (region == "jp") return "https://share.dexcom.jp/ShareWebServices/Services/";
+    if (region == "us") return "https://share2.dexcom.com/ShareWebServices/Services/";
+    return "https://shareous1.dexcom.com/ShareWebServices/Services/";
+}
+
+static String getDexcomAppId(String region) {
+    region.toLowerCase();
+    region.trim();
+    if (region == "jp") return "d8665ade-9673-4e27-9ff6-92db4ce13d13";
+    return "d89443d2-327c-4a6f-89e5-496bbb0317db";
+}
+
+static long parseDexcomWT(const char *wt) {
+    if (!wt || !*wt) return 0;
+    const char *p = strstr(wt, "Date(");
+    if (!p) return 0;
+    p += 5;
+    long long ms = atoll(p);
+    if (ms <= 0) return 0;
+    return (long)(ms / 1000);
+}
+
+static int dexcomPost(const String &endpoint, const String &body, String &outPayload) {
+    String url = getDexcomBaseUrl(dexRegion) + endpoint;
+    WiFiClientSecure client;
+    configureTlsClient(client, tls_insecure);
+    HTTPClient http;
+    http.setTimeout(15000);
+    http.begin(client, url);
+    http.addHeader("Accept", "application/json");
+    http.addHeader("User-Agent", "Dexcom Share/3.0.2.11 CFNetwork/711.2.23 Darwin/14.0.0");
+    int httpCode;
+    if (body.length() == 0) {
+        http.addHeader("Content-Length", "0");
+        httpCode = http.POST((uint8_t *)"", 0);
+    } else {
+        http.addHeader("Content-Type", "application/json");
+        httpCode = http.POST(body);
+    }
+    outPayload = (httpCode > 0) ? http.getString() : "";
+    http.end();
+    return httpCode;
+}
+
+static bool dexcomPostJson(const String &endpoint, const String &body, String &outPayload) {
+    return dexcomPost(endpoint, body, outPayload) == HTTP_CODE_OK;
+}
+
+// Max 2 úplné auth pokusy za beh NA SLOT (dual: A nesmie zablokovať B).
+static uint8_t s_dexAuthFails[DIA_PROFILE_COUNT] = {0, 0};
+static constexpr uint8_t kDexAuthMaxFails = 2;
+
+static bool dexcomLogin() {
+    if (dexUser.length() == 0 || dexPwd.length() == 0) return false;
+    int si = dia_active_slot;
+    if (si < 0 || si >= DIA_PROFILE_COUNT) si = 0;
+    if (s_dexAuthFails[si] >= kDexAuthMaxFails) {
+        Serial.printf("Dexcom Auth: slot %d stop after %u fails (lockout guard)\n",
+                      si, (unsigned)kDexAuthMaxFails);
+        return false;
+    }
+
+    // Len region + read-only Publisher API – žiadny zápis / follower invite
+    Serial.printf("Dexcom Auth: slot=%d region=%s user_len=%u tls_insecure=%d\n",
+                  si, dexRegion.c_str(), (unsigned)dexUser.length(), (int)tls_insecure);
+
+    String appId = getDexcomAppId(dexRegion);
+    JsonDocument authBody;
+    authBody["accountName"] = dexUser;
+    authBody["password"] = dexPwd;
+    authBody["applicationId"] = appId;
+    String authStr;
+    serializeJson(authBody, authStr);
+
+    String accountPayload;
+    if (!dexcomPostJson("General/AuthenticatePublisherAccount", authStr, accountPayload)) {
+        s_dexAuthFails[si]++;
+        Serial.printf("Dexcom Authenticate failed slot %d (attempt %u/%u)\n",
+                      si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
+        return false;
+    }
+
+    dexcom_account_id = stripJsonQuotes(accountPayload);
+    if (isInvalidDexcomUuid(dexcom_account_id)) {
+        s_dexAuthFails[si]++;
+        Serial.printf("Dexcom: neplatne account ID slot %d (attempt %u/%u)\n",
+                      si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
+        dexcom_account_id = "";
+        return false;
+    }
+
+    JsonDocument loginBody;
+    loginBody["accountId"] = dexcom_account_id;
+    loginBody["password"] = dexPwd;
+    loginBody["applicationId"] = appId;
+    String loginStr;
+    serializeJson(loginBody, loginStr);
+
+    String sessionPayload;
+    if (!dexcomPostJson("General/LoginPublisherAccountById", loginStr, sessionPayload)) {
+        s_dexAuthFails[si]++;
+        Serial.printf("Dexcom LoginById failed slot %d (attempt %u/%u)\n",
+                      si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
+        return false;
+    }
+
+    dexcom_session_id = stripJsonQuotes(sessionPayload);
+    if (isInvalidDexcomUuid(dexcom_session_id)) {
+        s_dexAuthFails[si]++;
+        Serial.printf("Dexcom: neplatne session ID slot %d (attempt %u/%u)\n",
+                      si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
+        dexcom_session_id = "";
+        return false;
+    }
+    s_dexAuthFails[si] = 0;
+    Serial.println("Dexcom Auth OK (session)");
+    return true;
+}
+
+enum class DexRead : uint8_t { Ok, NoData, SessionDead };
+
+static bool dexcomApplyReadings(JsonDocument &doc) {
+    if (!doc.is<JsonArray>() || doc.size() == 0) return false;
+
+    float mgdl = doc[0]["Value"] | 0.0f;
+    if (mgdl <= 0.0f) return false;
+
+    String trend;
+    JsonVariant trendVar = doc[0]["Trend"];
+    if (trendVar.is<int>() || trendVar.is<long>() || trendVar.is<float>()) {
+        int trendNum = trendVar.as<int>();
+        static const char *trendNames[] = {
+            "", "DoubleUp", "SingleUp", "FortyFiveUp", "Flat",
+            "FortyFiveDown", "SingleDown", "DoubleDown", "NotComputable", "RateOutOfRange"
+        };
+        if (trendNum >= 1 && trendNum <= 9) trend = trendNames[trendNum];
+    } else {
+        trend = trendVar.as<String>();
+    }
+
+    const char *wt = doc[0]["WT"] | "";
+    long ts = parseDexcomWT(wt);
+
+    bool hasSrcDelta = false;
+    float srcDeltaMmol = 0.0f;
+    if (doc.size() >= 2) {
+        float prevMgdl = doc[1]["Value"] | 0.0f;
+        if (prevMgdl > 0.0f) {
+            srcDeltaMmol = mgdl_to_mmol(mgdl) - mgdl_to_mmol(prevMgdl);
+            hasSrcDelta = true;
+        }
+    }
+
+    float hist[DIA_HISTORY_MAX];
+    int histN = 0;
+    size_t nDocs = doc.size();
+    if (nDocs > DIA_HISTORY_MAX) nDocs = DIA_HISTORY_MAX;
+    for (size_t i = 0; i < nDocs; i++) {
+        float v = doc[i]["Value"] | 0.0f;
+        if (v > 0.0f) hist[histN++] = mgdl_to_mmol(v);
+    }
+    if (histN > 0) glucoseHistorySetNewestFirst(hist, histN);
+
+    applyGlucoseReading(mgdl_to_mmol(mgdl), getTrendSymbol(trend), ts, hasSrcDelta, srcDeltaMmol);
+    Serial.printf("Dexcom OK readings=%u latest_mgdl=%.0f\n", (unsigned)histN, mgdl);
+    return true;
+}
+
+static DexRead dexcomReadQuery(const String &pathAndQuery) {
+    String payload;
+    int httpCode = dexcomPost(pathAndQuery, "", payload);
+    if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 500) return DexRead::SessionDead;
+    if (httpCode != HTTP_CODE_OK) {
+        // Nelogovať sessionId z query
+        Serial.printf("Dexcom HTTP %d ReadPublisherLatestGlucoseValues\n", httpCode);
+        return DexRead::NoData;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, payload)) return DexRead::NoData;
+    if (dexcomApplyReadings(doc)) return DexRead::Ok;
+    return DexRead::NoData;
+}
+
+static DexRead dexcomFetchLatest() {
+    if (dexcom_session_id.length() == 0) return DexRead::SessionDead;
+
+    String q = "Publisher/ReadPublisherLatestGlucoseValues?sessionId=" + dexcom_session_id +
+               "&minutes=1440&maxCount=" + String(DIA_HISTORY_MAX);
+    DexRead pub = dexcomReadQuery(q);
+    if (pub == DexRead::Ok || pub == DexRead::SessionDead) return pub;
+
+    Serial.println("Dexcom Empty: ucet nema vlastne merania (Publisher). Follower login nefunguje.");
+    return DexRead::NoData;
+}
+
+void fetchDexcom() {
+    if (dexUser.length() == 0 || dexPwd.length() == 0) {
+        Serial.println("Dexcom Config: chyba user/pwd");
+        esp_rom_printf("[dex] Config: empty user/pwd\n");
+        markFetchError(FetchError::Config);
+        return;
+    }
+
+    if (dexcom_session_id.length() == 0) {
+        if (!dexcomLogin()) {
+            esp_rom_printf("[dex] Auth fail (login)\n");
+            markFetchError(FetchError::Auth);
+            return;
+        }
+    }
+
+    DexRead got = dexcomFetchLatest();
+    if (got == DexRead::Ok) {
+        esp_rom_printf("[dex] OK\n");
+        return;
+    }
+
+    // Jeden re-login pri mŕtvej session (počíta sa do auth fail limitu)
+    if (got == DexRead::SessionDead) {
+        dexcom_session_id = "";
+        dexcom_account_id = "";
+        if (!dexcomLogin()) {
+            esp_rom_printf("[dex] Auth fail (relogin)\n");
+            markFetchError(FetchError::Auth);
+            return;
+        }
+        got = dexcomFetchLatest();
+        if (got == DexRead::Ok) {
+            esp_rom_printf("[dex] OK after relogin\n");
+            return;
+        }
+    }
+
+    esp_rom_printf("[dex] fail got=%d\n", (int)got);
+    markFetchError(got == DexRead::SessionDead ? FetchError::Auth : FetchError::Empty);
+}
+
+void fetchNightscout() {
+    if (nsUrl.length() == 0) {
+        markFetchError(FetchError::Config);
+        return;
+    }
+    if (diaFetchAborted()) {
+        markFetchError(FetchError::Network);
+        return;
+    }
+
+    const int histCount = DIA_HISTORY_MAX;
+
+    String requestUrl = nsUrl;
+    if (requestUrl.endsWith("/")) requestUrl = requestUrl.substring(0, requestUrl.length() - 1);
+    requestUrl += "/api/v1/entries.json?count=" + String(histCount);
+    if (nsToken.length() > 0) requestUrl += "&token=" + nsToken;
+
+    diaFetchLogHeap("ns-pre");
+
+    int httpCode = -1;
+    String payload;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (diaFetchAborted()) break;
+        if (attempt > 0) diaFetchBreathe(400);
+        WiFiClientSecure client;
+        configureTlsClient(client, tls_insecure);
+        HTTPClient http;
+        http.setTimeout(10000);
+        http.begin(client, requestUrl);
+        httpCode = http.GET();
+        if (httpCode > 0) payload = http.getString();
+        http.end();
+        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
+            break;
+        Serial.printf("NS HTTP %d (pokus %d/2)\n", httpCode, attempt + 1);
+    }
+
+    if (httpCode > 0) {
+        if (httpCode == HTTP_CODE_OK) {
+            JsonDocument doc;
+            DeserializationError error = deserializeJson(doc, payload);
+            payload = "";
+
+            if (!error && doc.size() > 0) {
+                float sgv_mgdl = doc[0]["sgv"].as<float>();
+                if (sgv_mgdl <= 0.0f) {
+                    markFetchError(FetchError::Empty);
+                } else {
+                    String direction = doc[0]["direction"].as<String>();
+                    long long ns_date_ms = doc[0]["date"].as<long long>();
+
+                    bool hasSrcDelta = false;
+                    float srcDeltaMmol = 0.0f;
+                    if (doc.size() >= 2) {
+                        float prev_mgdl = doc[1]["sgv"].as<float>();
+                        if (prev_mgdl > 0.0f) {
+                            srcDeltaMmol = mgdl_to_mmol(sgv_mgdl) - mgdl_to_mmol(prev_mgdl);
+                            hasSrcDelta = true;
+                        }
+                    }
+
+                    float hist[DIA_HISTORY_MAX];
+                    int histN = 0;
+                    size_t nDocs = doc.size();
+                    if (nDocs > DIA_HISTORY_MAX) nDocs = DIA_HISTORY_MAX;
+                    for (size_t i = 0; i < nDocs; i++) {
+                        float v = doc[i]["sgv"].as<float>();
+                        if (v > 0.0f) hist[histN++] = mgdl_to_mmol(v);
+                    }
+                    if (histN > 0) glucoseHistorySetNewestFirst(hist, histN);
+
+                    applyGlucoseReading(mgdl_to_mmol(sgv_mgdl), getTrendSymbol(direction),
+                                       (long)(ns_date_ms / 1000), hasSrcDelta, srcDeltaMmol);
+                }
+            } else {
+                markFetchError(FetchError::Empty);
+            }
+        } else if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403) {
+            markFetchError(FetchError::Auth);
+        } else {
+            markFetchError(FetchError::Network);
+        }
+    } else {
+        markFetchError(FetchError::Network);
+    }
+    diaFetchLogHeap("ns-post");
+}
+
+void fetchGlucoseData() {
+    if (WiFi.status() != WL_CONNECTED) {
+        markFetchError(FetchError::Wifi);
+        return;
+    }
+    if (dsSource == "nightscout") {
+        fetchNightscout();
+    } else if (dsSource == "libre") {
+        fetchLibre();
+    } else if (dsSource == "dexcom") {
+        fetchDexcom();
+    } else if (dsSource == "guardian") {
+        fetchGuardian();
+    } else {
+        markFetchError(FetchError::Config);
+    }
+}
+
+// ==========================================
+// Asynchrónny fetch (FreeRTOS) – UI ostáva v loop
+// ==========================================
+
+enum class FetchPendingKind : uint8_t { None = 0, Success, Error };
+
+struct FetchPending {
+    FetchPendingKind kind = FetchPendingKind::None;
+    int slot = 0;
+    float mmol = 0;
+    char trend[24] = {0};
+    long ts = 0;
+    bool hasSourceDelta = false;
+    float sourceDeltaMmol = 0;
+    FetchError err = FetchError::None;
+};
+
+static TaskHandle_t s_fetchTask = nullptr;
+static volatile bool s_fetchBusy = false;
+static volatile bool s_fetchPause = false;
+static volatile bool s_deferUi = false;
+static volatile int s_fetchSlot = 0;
+static uint32_t s_fetchStartedMs = 0;
+static portMUX_TYPE s_fetchMux = portMUX_INITIALIZER_UNLOCKED;
+static FetchPending s_pending;
+
+bool diaFetchBusy() { return s_fetchBusy; }
+bool diaFetchDeferUi() { return s_deferUi; }
+int diaFetchCurrentSlot() { return s_fetchSlot; }
+
+/** Ak fetch task uviazne (TLS), uvoľni busy + zneplatni beh (žiadne 2× TLS naraz). */
+void diaFetchWatchdog(uint32_t nowMs) {
+    if (!s_fetchBusy) return;
+    if (s_fetchStartedMs == 0) return;
+    if ((uint32_t)(nowMs - s_fetchStartedMs) < 90000UL) return;
+    Serial.println("[fetch] WATCHDOG – busy >90s, abort dalsich slotov (bez ESP.restart)");
+    esp_rom_printf("[fetch] WATCHDOG >90s – prerus cyklus, task sam uvolni busy\n");
+    // Nemeniť busy/defer tu. Inak OTA a druhý fetch nabehnú popri stále bežiacom TLS.
+    s_fetchEpoch++;
+}
+
+static bool s_fetchGotReading = false;
+static bool s_showConnecting = false;
+static bool s_slotWait[2] = {false, false};
+static uint8_t s_fastNetRetries = 0;
+
+static void diaFetchSyncWaitFlag() {
+    s_showConnecting = s_slotWait[0] || s_slotWait[1];
+}
+
+bool diaFetchShowConnecting() {
+    return s_showConnecting && s_fastNetRetries < 8;
+}
+
+bool diaFetchSlotWaiting(int slot) {
+    if (slot < 0 || slot > 1) return false;
+    return s_slotWait[slot];
+}
+
+void diaFetchEnqueueSuccess(float mmol, const char *trend, long unix_ts,
+                            bool hasSourceDelta, float sourceDeltaMmol) {
+    s_fetchGotReading = true;
+    if (s_fetchSlot >= 0 && s_fetchSlot < 2) s_slotWait[s_fetchSlot] = false;
+    diaFetchSyncWaitFlag();
+    // Ulož IHNEĎ na fetch tasku – inak slot 1 prepíše pending a slot 0 ostane so starým ts
+    // (obaja siví s rovnakým vekom). UI refresh necháme na loop (LVGL).
+    const int slot = s_fetchSlot;
+    long ts = unix_ts;
+    if (ts <= 0) {
+        time_t now = time(nullptr);
+        if (now > 100000) ts = (long)now;
+    }
+    glucoseStoreReadingSlot(slot, mmol, trend ? String(trend) : String(""), ts,
+                            hasSourceDelta, sourceDeltaMmol);
+    Serial.printf("[fetch] slot %d OK mmol=%.2f ts=%ld (api_ts=%ld)\n",
+                  slot, mmol, ts, unix_ts);
+
+    portENTER_CRITICAL(&s_fetchMux);
+    s_pending.kind = FetchPendingKind::Success;
+    s_pending.slot = slot;
+    s_pending.mmol = mmol;
+    s_pending.ts = ts;
+    s_pending.hasSourceDelta = hasSourceDelta;
+    s_pending.sourceDeltaMmol = sourceDeltaMmol;
+    s_pending.err = FetchError::None;
+    if (trend) {
+        strncpy(s_pending.trend, trend, sizeof(s_pending.trend) - 1);
+        s_pending.trend[sizeof(s_pending.trend) - 1] = '\0';
+    } else {
+        s_pending.trend[0] = '\0';
+    }
+    portEXIT_CRITICAL(&s_fetchMux);
+}
+
+void diaFetchEnqueueError(FetchError err) {
+    if (s_fetchSlot >= 0 && s_fetchSlot < 2) {
+        // Empty = server odpovedal, ale bez SG (senzor/offline) – to nie je „čakám na server“
+        if (err == FetchError::Network || err == FetchError::Wifi)
+            s_slotWait[s_fetchSlot] = true;
+        else if (err == FetchError::Empty || err == FetchError::Auth || err == FetchError::Config)
+            s_slotWait[s_fetchSlot] = false;
+    }
+    diaFetchSyncWaitFlag();
+    const int slot = s_fetchSlot;
+    // Blip / prázdny JSON / krátky WiFi: nechaj poslednú hodnotu farebnú
+    if ((err == FetchError::Network || err == FetchError::Empty || err == FetchError::Wifi) &&
+        slotReadings[slot].has_valid_reading &&
+        !slotReadings[slot].data_is_stale) {
+        Serial.printf("[fetch] slot %d blip err=%d – drzim posledne data\n", slot, (int)err);
+        portENTER_CRITICAL(&s_fetchMux);
+        s_pending.kind = FetchPendingKind::Error;
+        s_pending.slot = slot;
+        s_pending.err = err;
+        portEXIT_CRITICAL(&s_fetchMux);
+        return;
+    }
+    slotReadings[slot].err = err;
+    Serial.printf("[fetch] slot %d ERR %d\n", slot, (int)err);
+
+    portENTER_CRITICAL(&s_fetchMux);
+    s_pending.kind = FetchPendingKind::Error;
+    s_pending.slot = slot;
+    s_pending.err = err;
+    portEXIT_CRITICAL(&s_fetchMux);
+}
+
+void diaFetchPoll() {
+    FetchPending local;
+    portENTER_CRITICAL(&s_fetchMux);
+    local = s_pending;
+    s_pending.kind = FetchPendingKind::None;
+    portEXIT_CRITICAL(&s_fetchMux);
+
+    if (local.kind == FetchPendingKind::None) return;
+
+    // Dáta už sú v slotReadings (enqueue) – tu len LVGL + globals pre shown
+    if (local.kind == FetchPendingKind::Success) {
+        diaUiUpdateSlotFace(local.slot);
+    } else if (local.kind == FetchPendingKind::Error) {
+        if (!s_deferUi || local.slot == s_fetchSlot) {
+            glucoseSyncGlobalsFromSlot(local.slot);
+            last_fetch_error = local.err;
+        }
+        diaUiUpdateSlotFace(local.slot);
+    }
+}
+
+static void diaFetchTask(void *param) {
+    (void)param;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        s_fetchRunEpoch = s_fetchEpoch;
+        s_fetchGotReading = false;
+        Serial.println("[fetch] start");
+        diaFetchLogHeap("cycle");
+        s_deferUi = true;
+
+        // Libre/Dex skôr než Nightscout – čistejší heap pre Libre TLS
+        int order[DIA_PROFILE_COUNT];
+        int orderN = 0;
+        auto isNs = [](int s) {
+            const String &src = profiles[s].dsSource;
+            return src == "nightscout" || src == "ns";
+        };
+        for (int pass = 0; pass < 2; pass++) {
+            for (int slot = 0; slot < DIA_PROFILE_COUNT; slot++) {
+                if (!diaProfileActive(slot)) continue;
+                if (pass == 0 && isNs(slot)) continue;
+                if (pass == 1 && !isNs(slot)) continue;
+                order[orderN++] = slot;
+            }
+        }
+
+        bool retrySlot[DIA_PROFILE_COUNT] = {};
+        auto runSlot = [&](int slot) {
+            // Najprv s_fetchSlot – inak PushSlot(1) skipne (guard: slot != current)
+            s_fetchSlot = slot;
+            diaConfigPushSlot(slot);
+            Serial.printf("[fetch] slot %d src=%s url=%s\n", slot,
+                          profiles[slot].dsSource.c_str(),
+                          profiles[slot].nsUrl.c_str());
+            esp_rom_printf("[fetch] slot %d src=%s dxu=%u\n", slot,
+                           profiles[slot].dsSource.c_str(),
+                           (unsigned)profiles[slot].dexUser.length());
+
+            portENTER_CRITICAL(&s_fetchMux);
+            s_pending.kind = FetchPendingKind::None;
+            portEXIT_CRITICAL(&s_fetchMux);
+
+            // História slotu do globals pred fetchom
+            glucoseHistoryClear();
+            glucoseSyncGlobalsFromSlot(slot);
+
+            fetchGlucoseData();
+            // UI pri platnej (aj starej) hodnote chybu hneď zmaže. Snímka musí
+            // vzniknúť tu, inak sa Emily z cache už neopakuje.
+            retrySlot[slot] = (slotReadings[slot].err == FetchError::Network ||
+                               slotReadings[slot].err == FetchError::Empty);
+            // História z JSON ostáva v globals – skopíruj do slotu pred poll
+            {
+                DiaSlotReading &sr = slotReadings[slot];
+                if (glucose_history_count > 0) {
+                    sr.history_count = glucose_history_count;
+                    memcpy(sr.history, glucose_history, sizeof(sr.history));
+                }
+            }
+            diaConfigPullSessionsSlot(slot); // len tokeny – nie dsSource (dual race)
+
+            // Počkaj kým loop spracuje pending (max ~2 s)
+            for (int w = 0; w < 40; w++) {
+                portENTER_CRITICAL(&s_fetchMux);
+                bool empty = (s_pending.kind == FetchPendingKind::None);
+                portEXIT_CRITICAL(&s_fetchMux);
+                if (empty) break;
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            diaFetchLogHeap("slot-done");
+        };
+
+        for (int oi = 0; oi < orderN; oi++) {
+            if (diaFetchAborted()) {
+                Serial.println("[fetch] aborted (watchdog)");
+                break;
+            }
+            const int slot = order[oi];
+            runSlot(slot);
+            // Dual Guardian: dlhšia pauza – 2× ťažký TLS download za sebou
+            const bool dualCl = orderN > 1 &&
+                                (profiles[slot].dsSource == "guardian" ||
+                                 (oi + 1 < orderN && profiles[order[oi + 1]].dsSource == "guardian"));
+            vTaskDelay(pdMS_TO_TICKS(dualCl ? 3000 : (orderN > 1 ? 1500 : 500)));
+        }
+
+        // Prvý slot často padne na studenom TLS / rozbitej PSRAM, druhý už prejde.
+        // Bez tohto ostane cache (Staré, prázdny graf) až do ďalšej minúty alebo reštartu.
+        if (!diaFetchAborted()) {
+            for (int slot = 0; slot < DIA_PROFILE_COUNT; slot++) {
+                if (!diaProfileActive(slot) || !retrySlot[slot]) continue;
+                Serial.printf("[fetch] slot %d retry\n", slot);
+                esp_rom_printf("[fetch] slot %d retry\n", slot);
+                vTaskDelay(pdMS_TO_TICKS(1500));
+                if (diaFetchAborted()) break;
+                runSlot(slot);
+            }
+        }
+
+        // Po fetche globals vráť na dieťa, ktoré je na obrazovke
+        if (s_fetchGotReading) {
+            s_fastNetRetries = 0;
+        } else if (s_fastNetRetries < 8) {
+            bool auth = false;
+            for (int slot = 0; slot < DIA_PROFILE_COUNT; slot++) {
+                if (!diaProfileActive(slot)) continue;
+                const FetchError e = slotReadings[slot].err;
+                if (e == FetchError::Auth || e == FetchError::Config) auth = true;
+            }
+            if (!auth) {
+                s_fastNetRetries++;
+                lastUpdate = millis() - updateInterval + 5000;
+                esp_rom_printf("[fetch] siet, dalsi pokus o 5s (%u)\n", (unsigned)s_fastNetRetries);
+            }
+        }
+        s_deferUi = false;
+        s_fetchSlot = diaShownSlot();
+        diaConfigPushSlot(s_fetchSlot);
+        glucoseSyncGlobalsFromSlot(s_fetchSlot);
+        s_fetchBusy = false;
+        s_fetchStartedMs = 0;
+        Serial.println("[fetch] done");
+    }
+}
+void diaFetchInit() {
+    if (s_fetchTask) return;
+    // Predĺž TWDT – CareLink JSON inak zhltne CPU0 IDLE → TASK_WDT reboot
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR >= 5
+    {
+        esp_task_wdt_config_t wdtCfg = {
+            .timeout_ms = 30000,
+            .idle_core_mask = (1 << 0) | (1 << 1),
+            .trigger_panic = true,
+        };
+        esp_task_wdt_reconfigure(&wdtCfg);
+    }
+#else
+    esp_task_wdt_init(30, true);
+#endif
+    // Stack: TLS + JSON; core 0, loop typicky core 1
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        diaFetchTask,
+        "diaFetch",
+        28672,
+        nullptr,
+        1,
+        &s_fetchTask,
+        0);
+    if (ok != pdPASS) {
+        Serial.println("[fetch] task create FAILED – sync fallback");
+        s_fetchTask = nullptr;
+    } else {
+        Serial.println("[fetch] task OK");
+    }
+}
+
+bool diaFetchQuiesce(uint32_t timeoutMs) {
+    s_fetchPause = true;
+    const uint32_t start = millis();
+    while (s_fetchBusy && (millis() - start) < timeoutMs) delay(50);
+    if (s_fetchBusy) {
+        esp_rom_printf("[fetch] quiesce timeout\n");
+        return false;
+    }
+    return true;
+}
+
+void diaFetchResume() {
+    s_fetchPause = false;
+}
+
+bool diaFetchRequest() {
+    if (s_fetchPause || s_fetchBusy) return false;
+
+    if (!s_fetchTask) {
+        // Fallback: synchrónne (ak task nevznikol)
+        fetchGlucoseData();
+        return true;
+    }
+
+    s_fetchBusy = true;
+    s_fetchStartedMs = millis();
+    xTaskNotifyGive(s_fetchTask);
+    return true;
+}

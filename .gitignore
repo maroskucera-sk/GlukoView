@@ -1,0 +1,33 @@
+.pio/
+.vscode/
+.tmp_ws_demo/
+.tmp_ws_demo.zip
+serial_boot.txt
+serial_*.txt
+*.log
+.cache/
+compile_commands.json
+tools/ui_shot/build/
+**/__pycache__/
+*.pyc
+
+# Build artefakty (root aj inde mimo .pio)
+*.bin
+!**/partitions*.csv
+firmware.bin
+bootloader.bin
+partitions.bin
+*.elf
+*.map
+
+# Súkromný kľúč OTA a hotové podpisy. Verejný kľúč je v include/dia_ota_pubkey.h.
+*.pem
+!include/**
+tools/ota_private.pem
+tools/*.sig
+
+# Lokálne tokeny / CareLink dump (nikdy do gitu)
+logindata.json
+**/logindata.json
+*.env
+.env.*
