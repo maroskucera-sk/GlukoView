@@ -20,42 +20,37 @@
 unsigned long last_ota_check = 0;
 const unsigned long otaCheckInterval = 86400000UL; // 24 h medzi kontrolami
 const unsigned long otaFirstCheckDelay = 120000UL; // prvá kontrola ~2 min po štarte
+const unsigned long otaNightRetry = 15UL * 60UL * 1000UL;
 bool ota_first_check_done = false;
+static int s_otaKnownVer = 0;
 
 #if defined(DIA_BOARD_WS_1_28)
-static const char *OTA_BOARD_ID = "ws128";
-static const char kOtaBoardTag[] = "GVBOARD:ws128";
+#define DIA_OTA_ID "solo"
 #else
-static const char *OTA_BOARD_ID = "ws35";
-static const char kOtaBoardTag[] = "GVBOARD:ws35";
+#define DIA_OTA_ID "duo"
 #endif
-static const char *OTA_VERSION_HTTPS = "https://glukoview.com/update/"
-#if defined(DIA_BOARD_WS_1_28)
-    "ws128"
-#else
-    "ws35"
-#endif
-    "/version.txt";
-static const char *OTA_FIRMWARE_HTTPS = "https://glukoview.com/update/"
-#if defined(DIA_BOARD_WS_1_28)
-    "ws128"
-#else
-    "ws35"
-#endif
-    "/firmware.bin";
-static const char *OTA_SIG_HTTPS = "https://glukoview.com/update/"
-#if defined(DIA_BOARD_WS_1_28)
-    "ws128"
-#else
-    "ws35"
-#endif
-    "/firmware.sig";
+static const char *OTA_BOARD_ID = DIA_OTA_ID;
+static const char kOtaBoardTag[] = "GVBOARD:" DIA_OTA_ID;
+static const char *OTA_VERSION_HTTPS = "https://glukoview.com/update/" DIA_OTA_ID "/version.txt";
+static const char *OTA_FIRMWARE_HTTPS = "https://glukoview.com/update/" DIA_OTA_ID "/firmware.bin";
+static const char *OTA_SIG_HTTPS = "https://glukoview.com/update/" DIA_OTA_ID "/firmware.sig";
 static const char *s_otaFail = "";
 
 // ota_expect = číslo z version.txt tesne pred reštartom do nového binárneho súboru
 // ota_block  = to isté číslo, ak po reštarte firmvér v sebe stále nemá vyššiu verziu
 static const char *OTA_KEY_EXPECT = "ota_expect";
 static const char *OTA_KEY_BLOCK = "ota_block";
+
+bool diaOtaInDayWindow() {
+    if (time(nullptr) < 1700000000) return false;
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 0)) return false;
+    const int hour = timeinfo.tm_hour;
+    if (day_start_hour < night_start_hour) {
+        return hour >= day_start_hour && hour < night_start_hour;
+    }
+    return hour >= day_start_hour || hour < night_start_hour;
+}
 
 void diaOtaNoteBoot() {
     if (!preferences.isKey(OTA_KEY_EXPECT)) return;
@@ -160,6 +155,7 @@ static bool fetchLatestVersion(int &outVer, uint32_t timeoutMs = 15000) {
     int code = http.GET();
     if (code == HTTP_CODE_OK) {
         outVer = parseOtaVersion(http.getString());
+        if (outVer > 0) s_otaKnownVer = outVer;
         http.end();
         Serial.printf("[OTA] HTTPS %s version=%d (local=%d.%d)\n",
                       OTA_BOARD_ID, outVer, FIRMWARE_VERSION_MAJOR, FIRMWARE_VERSION_MINOR);
@@ -175,6 +171,10 @@ int diaOtaServerVersion() {
     int v = 0;
     if (!fetchLatestVersion(v, 3000)) return 0;
     return v;
+}
+
+int diaOtaKnownVersion() {
+    return s_otaKnownVer;
 }
 
 static void otaEnsureTime() {
@@ -351,6 +351,11 @@ void check_firmware_update(bool manual) {
             lv_obj_add_flag(ui_settings_panel, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(ui_info_panel, LV_OBJ_FLAG_HIDDEN);
         }
+        return;
+    }
+
+    if (!manual && !diaOtaInDayWindow()) {
+        Serial.println("[OTA] mimo denného okna, bez sťahovania");
         return;
     }
 

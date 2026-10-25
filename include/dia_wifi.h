@@ -37,6 +37,8 @@ bool diaWifiTryConnect();
 bool diaWifiEnsureConnected();
 
 void diaWifiProcess();
+/** Po rýchlom WiFi ešte chvíľu drží boot vetu, potom vráti ciferník. */
+void diaWifiPollBootLegal();
 void diaWifiSavePortalConfigIfNeeded();
 void diaWifiMaintain(uint32_t currentMillis);
 /** True = na displeji má ostať IP návod, fetch ešte nespúšťať. */

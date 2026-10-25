@@ -64,6 +64,7 @@ Add-Src $gxx $cxx (Join-Path $PSScriptRoot "host_stub.cpp")
 Add-Src $gxx $cxx (Join-Path $PSScriptRoot "png_write.cpp")
 Add-Src $gxx $cxx (Join-Path $root "src\dia_ui.cpp")
 Add-Src $gxx $cxx (Join-Path $root "src\dia_i18n.cpp")
+Add-Src $gxx $cxx (Join-Path $root "src\dia_legal.cpp")
 Add-Src $gxx $cxx (Join-Path $root "src\dia_glucose.cpp")
 foreach ($f in @("font_sk_16.c","font_sk_20.c","font_sk_24.c","font_sk_48.c","font_sk_72.c","font_sk_88.c","logo_boot.c")) {
     Add-Src $gcc $cc (Join-Path $root "src\$f")

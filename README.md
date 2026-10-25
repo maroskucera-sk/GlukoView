@@ -4,14 +4,18 @@
 
 **This is not a medical device.** Do not use the number on this display as the only basis for an insulin dose or a treatment decision.
 
+Projekt GlukoView je nezávislý open-source softvér. Nie je nijako prepojený, sponzorovaný, podporovaný ani inak schválený spoločnosťami Abbott (FreeStyle Libre), Dexcom ani Medtronic (Guardian). Všetky uvedené ochranné známky a logá sú majetkom ich príslušných vlastníkov.
+
+The GlukoView project is independent open-source software. It is not affiliated with, sponsored by, endorsed by, or otherwise approved by Abbott (FreeStyle Libre), Dexcom, or Medtronic (Guardian). All trademarks and logos mentioned are the property of their respective owners.
+
 Stolný ukazovateľ glykémie pre dve dosky Waveshare s ESP32-S3. Nie je to hodinky. Jeden zdroj, dva obrazy firmvéru. Menu je po slovensky, v nastavení sú aj čeština, angličtina, nemčina, španielčina a francúzština.
 
 ## Dosky (hardware)
 
 | Doska | PlatformIO env | OTA priečinok | Poznámka |
 | --- | --- | --- | --- |
-| [Waveshare ESP32-S3 1.28" round](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.28) (GC9A01) | `waveshare_s3_1_28` | `update/ws128/` | 1 používateľ |
-| [Waveshare ESP32-S3-Touch-LCD-3.5B](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-3.5B) | `waveshare_s3_3_5` | `update/ws35/` | dual A/B |
+| [Waveshare ESP32-S3 1.28" round](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.28) (GC9A01) | `waveshare_s3_1_28` | `update/solo/` | Solo, 1 používateľ |
+| [Waveshare ESP32-S3-Touch-LCD-3.5B](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-3.5B) | `waveshare_s3_3_5` | `update/duo/` | Duo, 1–2 používatelia, zvuk |
 
 Obraz z jednej dosky sa nesmie nahrať do druhej. Ručný upload 3.5B: env `waveshare_s3_3_5_manual` (podrž BOOT → RST → pusť BOOT).
 
@@ -28,6 +32,8 @@ pio run -e waveshare_s3_3_5 -t upload --upload-port COMy
 ```
 
 GitHub Actions preloží oba obrazy pri pushi a PR (pozri `.github/workflows/firmware.yml`).
+
+Kupujúci Visual Studio nepotrebuje. Stránka v `docs/install/` nahrá Solo alebo Duo priamo z Chrome alebo Edge. Obrazy sa zbalia príkazom `python tools/pack_web_install.py` z práve preloženého firmvéru. GitHub Pages: vetva `main`, priečinok `/docs`. Adresa je potom `https://maroskucera-sk.github.io/GlukoView/install/`. OTA ostáva bežná aktualizácia. Táto stránka je prvé nahratie a záchrana, keď sa doska sama neaktualizuje.
 
 ## Prvé nastavenie (web)
 
@@ -51,6 +57,8 @@ Použitie je na vlastné riziko (community project). Podrobnosti: [SECURITY.md](
 ## Aktualizácia (OTA)
 
 Firmvér sa sťahuje len cez HTTPS a len keď sedí podpis. Prepínač „TLS bez overenia“ platí pre Nightscout a podobné služby, **nie** pre OTA.
+
+Automatická inštalácia beží len cez deň, v tom istom okne ako denný jas (predvolene 7:00 až 22:00). V noci a kým nie je nastavený čas sa nič nesťahuje ani nereštartuje. Ďalší pokus je cez deň. Položka Aktualizácia v menu funguje aj v noci.
 
 Na serveri pre každú dosku:
 

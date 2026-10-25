@@ -10,6 +10,8 @@ void diaUiInitLvgl();
 void build_ui();
 /** Zapne backlight až po vykreslení loga (bez boot šumu). */
 void diaUiRevealDisplay();
+/** Dobehne pôvodných 2,2 s loga. Potom môže ísť text o liečbe. */
+void diaUiHoldSplash();
 
 void showBootStatus(const char *title, const char *detail);
 void restoreMainScreenChrome();
@@ -39,6 +41,10 @@ void diaUiApplyDisplayMode();
 void diaUiUpdateSlotFace(int slot);
 /** First-boot LVGL language picker; blocking until a language is chosen. */
 bool diaUiRunLanguageSetup();
+/** Po jazyku: súhlas, že displej nie je na liečebné rozhodnutia. No-op, ak už je v NVS. */
+void diaUiRunLegalConsent();
+/** true, kým od prvého boot textu neubehlo 5 s. Len drží ciferník, fetch nespomaľuje. */
+bool diaUiBootLegalHolding();
 
 // OTA panel (používa dia_ota)
 extern lv_obj_t *ota_panel;

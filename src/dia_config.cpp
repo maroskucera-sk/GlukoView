@@ -238,7 +238,7 @@ static void loadProfileFromNvs(int slot) {
     // Ak existuje p0_src, načítaj prefixované; inak legacy len pre slot 0
     if (preferences.isKey(k(slot, "src").c_str()) || preferences.isKey(k(slot, "name").c_str())) {
         p.name = preferences.getString(k(slot, "name").c_str(), "");
-        p.dsSource = preferences.getString(k(slot, "src").c_str(), slot == 0 ? "nightscout" : "off");
+        p.dsSource = preferences.getString(k(slot, "src").c_str(), "off");
         p.nsUrl = preferences.getString(k(slot, "nsu").c_str(), "");
         p.nsToken = diaNvsGetSecret(k(slot, "nst").c_str());
         p.dsUser = preferences.getString(k(slot, "dsu").c_str(), "");
@@ -272,7 +272,7 @@ static void loadProfileFromNvs(int slot) {
     } else if (slot == 0) {
         // Legacy single-user keys → profile 0
         p.name = preferences.getString("p0_name", "");
-        p.dsSource = preferences.getString("ds_source", "nightscout");
+        p.dsSource = preferences.getString("ds_source", "off");
         p.nsUrl = preferences.getString("ns_url", "");
         p.nsToken = diaNvsGetSecret("ns_token");
         p.dsUser = preferences.getString("ds_user", "");

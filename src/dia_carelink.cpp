@@ -1,6 +1,7 @@
 #include "dia_carelink.h"
 #include "dia_carelink_store.h"
 #include "dia_config.h"
+#include "dia_diag.h"
 #include "dia_glucose.h"
 #include "dia_secret.h"
 #include "dia_tls.h"
@@ -940,6 +941,7 @@ void carelinkForgetEndpoints() {
 }
 
 static bool discoverEndpoints() {
+    diaDiagStep(dia_active_slot, DiaDiagStep::Discover);
     carelinkRestoreTokenUrl();
     if (clBaseCare.length() > 0 && clBaseCumulus.length() > 0 && clTokenUrl.length() > 0) return true;
     if (clCountry.length() == 0) {
@@ -1050,6 +1052,7 @@ static bool carelinkCommitNewRefresh(int slot, const String &access, const Strin
 }
 
 static ClRefreshResult refreshAccessToken() {
+    diaDiagStep(clBoundSlot, DiaDiagStep::Refresh);
     if (!carelinkTokensLock()) return ClRefreshResult::Transient;
     ClRefreshResult result = ClRefreshResult::Transient;
     const int slot = (clBoundSlot <= 0) ? 0 : clBoundSlot;
@@ -1293,6 +1296,7 @@ static long parseCarelinkTime(JsonVariant last) {
 }
 
 static bool readGlucose(bool &authFail) {
+    diaDiagStep(dia_active_slot, DiaDiagStep::Read);
     authFail = false;
     String url = clBaseCumulus + "/display/message";
     JsonDocument body;
@@ -1326,13 +1330,21 @@ static bool readGlucose(bool &authFail) {
         }
         String patientUser;
         String softMatch;
+        // Pref zo slotu (nie len globál) – B musí držať vlastného pacienta
         String pref = carelink_patient_pref;
+        if (dia_active_slot >= 0 && dia_active_slot < DIA_PROFILE_COUNT) {
+            String slotPref = profiles[dia_active_slot].carelink_patient_pref;
+            slotPref.trim();
+            if (slotPref.length()) pref = slotPref;
+        }
         pref.trim();
         String prefLower = pref;
         prefLower.toLowerCase();
         String list;
         String firstAny;
-        String firstOther; // dual B bez pref: iný než A
+        String firstOther; // dual A+B CareLink, B bez pref: iný než A v tomto cykle
+        const bool dualClSameAccount =
+            dia_active_slot == 1 && profiles[0].dsSource.equalsIgnoreCase("guardian");
         for (JsonObject p : patients.as<JsonArray>()) {
             String u = p["username"] | "";
             String fn = p["firstName"] | "";
@@ -1344,20 +1356,22 @@ static bool readGlucose(bool &authFail) {
             }
             if (display.length() == 0) display = u;
             if (u.length()) {
+                // Celý zoznam vždy – break pri pref skôr skrátil list na 1 meno v menu
                 list += u;
                 list += '\t';
                 list += display;
                 list += '\n';
                 if (firstAny.length() == 0) firstAny = u;
-                if (firstOther.length() == 0 && s_lastFetchedPatientId.length() > 0 &&
+                if (dualClSameAccount && firstOther.length() == 0 &&
+                    s_lastFetchedPatientId.length() > 0 &&
                     !u.equalsIgnoreCase(s_lastFetchedPatientId)) {
                     firstOther = u;
                 }
             }
-            if (pref.length() == 0 || u.length() == 0) continue;
+            if (pref.length() == 0 || u.length() == 0 || patientUser.length() > 0) continue;
             if (u.equalsIgnoreCase(pref) || display.equalsIgnoreCase(pref)) {
-                patientUser = u; // exact – hotovo
-                break;
+                patientUser = u; // exact – bez break, dozoznam ostáva kompletný
+                continue;
             }
             String blob = u + " " + fn + " " + ln;
             blob.toLowerCase();
@@ -1365,8 +1379,18 @@ static bool readGlucose(bool &authFail) {
         }
         if (patientUser.length() == 0) patientUser = softMatch;
         if (patientUser.length() == 0 && pref.length() == 0) {
-            if (dia_active_slot == 1 && firstOther.length() > 0) patientUser = firstOther;
+            if (dualClSameAccount && firstOther.length() > 0) patientUser = firstOther;
             else patientUser = firstAny;
+        }
+        // Prvý výber bez pref → ulož, aby B nestriedal (A=NS + B=CL)
+        if (pref.length() == 0 && patientUser.length() > 0 &&
+            dia_active_slot >= 0 && dia_active_slot < DIA_PROFILE_COUNT) {
+            profiles[dia_active_slot].carelink_patient_pref = patientUser;
+            carelink_patient_pref = patientUser;
+            char key[12];
+            snprintf(key, sizeof(key), "p%d_cpf", dia_active_slot);
+            preferences.putString(key, patientUser);
+            if (dia_active_slot == 0) preferences.putString("cl_pref", patientUser);
         }
         if (list.length() > 0) {
             carelink_patient_list = list;
@@ -1663,7 +1687,14 @@ static bool carelinkAccessUsable(long exp) {
 }
 
 void fetchGuardian() {
-    if (dia_active_slot == 0) s_lastFetchedPatientId = "";
+    // Dual CareLink: A nastaví s_lastFetchedPatientId, B bez pref vezme „iného“.
+    // A=Nightscout/Libre: fetchGuardian(0) nebeží → ID sa nevyčistí a B strieda 2 pacientov.
+    if (dia_active_slot == 0) {
+        s_lastFetchedPatientId = "";
+    } else if (dia_active_slot == 1 &&
+               !profiles[0].dsSource.equalsIgnoreCase("guardian")) {
+        s_lastFetchedPatientId = "";
+    }
     esp_rom_printf("[carelink] fetch slot=%d heap=%u psram=%u\n",
                    dia_active_slot, (unsigned)ESP.getFreeHeap(),
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

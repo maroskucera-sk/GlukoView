@@ -199,8 +199,42 @@ enum class Str : uint16_t {
     VolHigh,
     OrientUsbR,
     OrientUsbL,
-    /** Po WiFi (detail pod IP v titulku): kam otvoriť nastavenie */
+    /** Po WiFi: návod, adresa do prehliadača je pod ním. */
     BootPortalHint,
+    /** Web menu po IP (veľké tlačidlá) */
+    PortalHomeHint,
+    PortalBtnParams,
+    PortalBtnCarelink,
+    PortalBtnWifi,
+    PortalBtnWizard,
+    PortalBtnSupport,
+    PortalDiagLead,
+    LegalTitle,
+    LegalBody,
+    /** Nezávislosť od Abbott, Dexcom a Medtronic. Súčasť súhlasu, nie samostatné odkliknutie. */
+    LegalIndep,
+    LegalUnderstand,
+    LegalContinue,
+    LegalInfoFmt,
+    LegalAccepted,
+    LegalWebTitle,
+    LegalWebBody,
+    LegalWebCheck,
+    LegalWebGo,
+    LegalFoot,
+    /** Info: rozpísané vedomie, že zariadenie nie je na liečbu. */
+    LegalInfoStored,
+    LegalInfoMissing,
+    /** Každý štart, kým nie je ciferník: nie pomôcka, nie na inzulín, nie na liečbu. */
+    LegalBoot,
+    /** Info: krátky stav, ktorý svieti nad rozpísaným vedomím. */
+    LegalInfoOk,
+    LegalInfoNo,
+    /** Portál: Libre zoznam pacientov ešte nie je, práve sa sťahuje. */
+    PortalLibreWait,
+    PortalLibreAuth,
+    PortalLibreEmpty,
+    PortalLibreStill,
     StrCount
 };
 

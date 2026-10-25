@@ -4,17 +4,32 @@
 #include "dia_board.h"
 #include "dia_carelink.h"
 #include "dia_i18n.h"
+#include "dia_legal.h"
 #include "dia_config.h"
+#include "dia_diag.h"
 #include "dia_fetch.h"
 #include "dia_glucose.h"
+#include "dia_portal_assets.h"
 #include "dia_secret.h"
 #include "dia_types.h"
 #include "dia_ui.h"
 #include "dia_version.h"
 
 #include <WiFi.h>
+#include <WebServer.h>
 #include <time.h>
 #include <vector>
+
+/** Prepend RequestHandler – WebServer::_firstHandler je protected. */
+class DiaWebServerPinAccess : public WebServer {
+public:
+    void prependHandler(RequestHandler *h) {
+        if (!h) return;
+        h->next(_firstHandler);
+        _firstHandler = h;
+        if (!_lastHandler) _lastHandler = h;
+    }
+};
 
 WiFiManager wm;
 WiFiMulti wifiMulti;
@@ -113,13 +128,80 @@ static bool diaNeedsSourceSetup() {
 bool diaWifiNeedsSetupHint() { return diaNeedsSourceSetup(); }
 
 static void showConnectedPortalHint() {
-    // IP ako titulok (najväčší text) – bez hotového zdroja musí byť stále viditeľná
+    // Najprv návod, pod ním adresa, ktorú treba napísať do prehliadača.
     String ip = WiFi.localIP().toString();
     if (ip == "0.0.0.0" || ip.length() == 0) ip = "—.—.—.—";
-    showBootStatus(ip.c_str(), S(Str::BootPortalHint));
+    String body = String(S(Str::BootPortalHint));
+    body += "\n\n";
+    body += ip;
+    showBootStatus("", body.c_str());
 }
 
-/** Captive portal / úvod: v AP rovno WiFi výber, v STA rovno nastavenie zdroja. */
+static String wizWhen(int slot);
+
+/** Spoločné CSS: veľké tap ciele na mobile (min ~48 px). */
+static void diaPortalCss(String &page) {
+    page += F(
+        "body{font-family:system-ui,-apple-system,Verdana,sans-serif;margin:0;padding:16px;"
+        "background:#0b0f14;color:#eee;-webkit-text-size-adjust:100%}"
+        ".gv-logo{text-align:center;margin:4px 0 14px}"
+        ".gv-logo img{display:inline-block;max-width:min(180px,70vw);height:auto}"
+        ".brand{font-size:28px;font-weight:700;letter-spacing:-0.5px;color:#fff;margin:0 0 4px}"
+        ".brand span{color:#1fa3ec}"
+        ".sub{color:#6a7a8a;font-size:14px;margin:0 0 16px;line-height:1.4}"
+        ".card{background:#151c26;border-radius:12px;padding:14px 16px;margin:0 0 16px}"
+        ".card p{margin:6px 0;font-size:15px}"
+        "label{font-size:13px;color:#9aa8b5;display:block}"
+        "input,select,textarea{width:100%;padding:12px;margin:4px 0 12px;box-sizing:border-box;"
+        "border-radius:10px;border:1px solid #243040;background:#151c26;color:#eee;font-size:16px}"
+        "h1{font-size:22px;margin:0 0 12px}h2{font-size:18px;margin:16px 0 8px}"
+        "h3{margin:22px 0 8px;padding:10px 12px;background:#151c26;border-radius:10px;"
+        "border-left:4px solid #1fa3ec;color:#fff;font-size:16px}"
+        "h3.b{border-left-color:#7c5cff}"
+        "h4{color:#8cf;margin:10px 0 4px}"
+        "button,.btn{display:block;width:100%;min-height:52px;padding:16px 14px;margin:10px 0 0;"
+        "background:linear-gradient(135deg,#1fa3ec,#0d7ab8);color:#fff!important;border:0;"
+        "border-radius:12px;font-size:17px;font-weight:600;text-align:center;text-decoration:none;"
+        "box-sizing:border-box;line-height:1.25;-webkit-tap-highlight-color:transparent}"
+        ".btn-cl{background:linear-gradient(135deg,#7c5cff,#5a3fd4)}"
+        ".btn-sec{background:#243040}"
+        ".btn-ok{background:linear-gradient(135deg,#2a9d6a,#1e7a50)}"
+        "a{color:#8cf}.h,.muted{color:#9ab;font-size:13px;line-height:1.4;margin:0 0 8px}"
+        ".srcblk{display:none}.nav{margin:8px 0 18px}"
+        "label.check{display:flex;gap:10px;align-items:flex-start;color:#ddd;font-size:15px;line-height:1.45;margin:14px 0}"
+        "label.check input{width:22px;height:22px;min-height:22px;margin:2px 0 0;flex:none}"
+        "button:disabled{opacity:.4}"
+    );
+}
+
+void diaPortalAppendLegalNote(String &page) {
+    page += F("<p class=legalnote style=\"margin:18px 0 0;padding-top:8px;border-top:1px solid #243040;"
+              "color:#6a7682;font-size:11px;line-height:1.4\">");
+    page += S(Str::LegalFoot);
+    page += F(" ");
+    page += S(Str::LegalIndep);
+    page += F("</p>");
+}
+
+static void diaPortalBtn(String &page, const char *href, const char *label, const char *cls = "") {
+    page += F("<a class=\"btn");
+    if (cls && cls[0]) {
+        page += F(" ");
+        page += cls;
+    }
+    page += F("\" href=\"");
+    page += href;
+    page += F("\">");
+    page += label;
+    page += F("</a>");
+}
+
+/**
+ * Captive / úvod:
+ * AP → WiFi výber
+ * STA bez hotového zdroja → wizard /setup
+ * STA hotové → menu s veľkými tlačidlami (Parametre, CareLink, WiFi)
+ */
 static void handlePortalHome() {
     if (!wm.server) return;
     const wifi_mode_t mode = WiFi.getMode();
@@ -128,8 +210,54 @@ static void handlePortalHome() {
         wm.server->send(302, F("text/plain"), F(""));
         return;
     }
-    wm.server->sendHeader(F("Location"), F("/param"), true);
-    wm.server->send(302, F("text/plain"), F(""));
+    if (diaNeedsSourceSetup()) {
+        wm.server->sendHeader(F("Location"), F("/setup"), true);
+        wm.server->send(302, F("text/plain"), F(""));
+        return;
+    }
+
+    String page;
+    page.reserve(2800);
+    page += F("<!DOCTYPE html><html><head><meta charset=UTF-8>"
+              "<meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+              "<title>GlukoView</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F("<style>");
+    diaPortalCss(page);
+    page += F("</style></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<p class=sub>");
+    page += S(Str::PortalHomeHint);
+    page += F("</p><div class=card><p><b>");
+    page += (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : String("—");
+    page += F("</b> · v");
+    page += String(FIRMWARE_VERSION_MAJOR);
+    page += F(".");
+    page += String(FIRMWARE_VERSION_MINOR);
+    page += F("</p><p>");
+    page += profiles[0].name.length() ? profiles[0].name : String("A");
+    page += F(": ");
+    page += wizWhen(0);
+    page += F("</p>");
+    if (!diaBoardIsRound() && display_mode >= 2) {
+        page += F("<p>");
+        page += profiles[1].name.length() ? profiles[1].name : String("B");
+        page += F(": ");
+        page += wizWhen(1);
+        page += F("</p>");
+    }
+    page += F("</div><div class=nav>");
+    diaPortalBtn(page, "/param?all=1", S(Str::PortalBtnParams));
+    // CareLink nie v hlavnom menu – len v Parametroch pri zdroji Guardian
+    diaPortalBtn(page, "/nets", S(Str::PortalBtnWifi), "btn-sec");
+    diaPortalBtn(page, "/setup?s=0", S(Str::PortalBtnWizard), "btn-sec");
+    diaPortalBtn(page, "/diag", S(Str::PortalBtnSupport), "btn-sec");
+    page += F("</div><p class=muted>");
+    page += S(Str::WizUnplug);
+    page += F("</p>");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
+    wm.server->send(200, "text/html; charset=utf-8", page);
 }
 
 // ==========================================
@@ -395,6 +523,38 @@ static void diaApplySecret(String &dst, const char *incoming) {
     if (incoming && incoming[0]) dst = incoming;
 }
 
+static void restore_ui_after_wifi();
+
+/** https:// ak chýba schéma; odstráň trailing /. */
+static void diaNormalizeNsUrl(String &url) {
+    url.trim();
+    while (url.endsWith("/") && url.length() > 8) url.remove(url.length() - 1);
+    if (url.length() == 0) return;
+    String lower = url;
+    lower.toLowerCase();
+    if (!lower.startsWith("http://") && !lower.startsWith("https://"))
+        url = String("https://") + url;
+}
+
+/** Preferuj POST body pred WM bufferom (token >64 znakov, custom /param). */
+static String portalArgOrParam(const char *id, WiFiManagerParameter *fallback) {
+    if (wm.server && wm.server->hasArg(id)) return wm.server->arg(id);
+    if (fallback) return String(fallback->getValue());
+    return "";
+}
+
+/** Po hotovom zdroji: odomkni ciferník a hneď fetch (bez reštartu). */
+static void diaAfterSourceConfigured() {
+    if (diaNeedsSourceSetup()) {
+        forceFetch = false;
+        if (WiFi.status() == WL_CONNECTED) showConnectedPortalHint();
+        return;
+    }
+    diaFetchOnConfigChanged();
+    forceFetch = true;
+    restore_ui_after_wifi();
+}
+
 static void diaPortalPatientSelect(String &page, const char *label, const char *fieldName,
                                    const String &cur, const String &list) {
     if (list.length() == 0) {
@@ -506,6 +666,24 @@ static void diaPortalSourceBlock(String &page, bool userB, const String &src,
     diaField(page, S(Str::PortalEmail), lluUserN, vLluUser);
     diaField(page, S(Str::PortalPassword), lluPwdN, vLluPwd, true);
     diaPortalLibrePatientSelect(page, libreN, vLibre, libreList);
+    if (libreList.length() == 0 && vLluUser.length() > 0) {
+        const int slot = userB ? 1 : 0;
+        const FetchError err = slotReadings[slot].err;
+        int lw = 0;
+        if (wm.server && wm.server->hasArg("lw")) lw = wm.server->arg("lw").toInt();
+        if (lw < 0) lw = 0;
+        page += F("<p class=h style=color:#fc6>");
+        if (err == FetchError::Auth) page += S(Str::PortalLibreAuth);
+        else if (err == FetchError::Empty) page += S(Str::PortalLibreEmpty);
+        else if (lw >= 8) page += S(Str::PortalLibreStill);
+        else page += S(Str::PortalLibreWait);
+        page += F("</p>");
+        if (err != FetchError::Auth && err != FetchError::Empty && lw < 8) {
+            page += F("<script>setTimeout(function(){location.replace('/param?lw=");
+            page += String(lw + 1);
+            page += F("')},4000)</script>");
+        }
+    }
     page += F("<p class=h>");
     page += S(Str::PortalPatientHint);
     page += F("</p><label>");
@@ -543,9 +721,7 @@ static void diaPortalSourceBlock(String &page, bool userB, const String &src,
     page += pfx;
     page += F("_guardian\" class=srcblk><p class=h>");
     page += S(Str::PortalGuardianHint);
-    page += F(" <a href=/carelink");
-    if (userB) page += F("?slot=1");
-    page += F(" style=color:#8cf>/carelink</a></p>");
+    page += F("</p>");
     if (clTokOk) {
         page += F("<p style=color:#6d6>");
         page += S(Str::PortalTokensOk);
@@ -555,15 +731,17 @@ static void diaPortalSourceBlock(String &page, bool userB, const String &src,
         page += S(Str::PortalTokensMissing);
         page += F("</p>");
     }
+    // Veľké tlačidlo – jeden ťuk na CareLink (nie drobný odkaz)
+    {
+        String href = userB ? String("/carelink?slot=1") : String("/carelink?slot=0");
+        diaPortalBtn(page, href.c_str(), S(Str::PortalBtnCarelink), "btn-cl");
+    }
     // Viditeľný patient select len v guardian bloku; hidden mimo (nižšie mimo div)
     if (isGuardian) {
         diaPortalCarelinkPatientFields(page, userB, true, clPref, clList);
         if (!userB || carelinkSlotOwnsTokens(1)) {
-            page += F("<p><a href=/carelink");
-            if (userB) page += F("?slot=1");
-            page += F(">");
-            page += S(Str::ClPickPatientBtn);
-            page += F("</a></p>");
+            String href = userB ? String("/carelink?slot=1") : String("/carelink?slot=0");
+            diaPortalBtn(page, href.c_str(), S(Str::ClPickPatientBtn), "btn-sec");
         }
         if (userB) {
             page += F("<p class=h>");
@@ -582,14 +760,11 @@ static void diaPortalSourceBlock(String &page, bool userB, const String &src,
 
 static void handleDiaParamPage() {
     if (!wm.server) return;
-    if (!wm.server->hasArg("all")) {
-        const bool mid = preferences.isKey("wiz") && preferences.getUChar("wiz", 255) != 255;
-        const bool fresh = !preferences.isKey("wiz") && profiles[0].dsSource.length() == 0;
-        if (mid || fresh) {
-            wm.server->sendHeader("Location", "/setup", true);
-            wm.server->send(302, "text/plain", "");
-            return;
-        }
+    // Wizard len kým chýba zdroj; hotový monitor → /param ostane editovateľný
+    if (!wm.server->hasArg("all") && diaNeedsSourceSetup()) {
+        wm.server->sendHeader("Location", "/setup", true);
+        wm.server->send(302, "text/plain", "");
+        return;
     }
 
     String src0 = custom_source ? String(custom_source->getValue()) : profiles[0].dsSource;
@@ -610,27 +785,17 @@ static void handleDiaParamPage() {
     snprintf(crit1, sizeof(crit1), "%.1f", custom_p1_t_crit ? atof(custom_p1_t_crit->getValue()) : profiles[1].targetCrit);
 
     String page;
-    page.reserve(14000);
+    page.reserve(15000);
     String langCur = String(diaI18nCode());
     langCur.toLowerCase();
     page += F(
         "<!DOCTYPE html><html><head><meta charset=UTF-8>"
-        "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-        "<title>GlukoView</title><style>"
-        "body{font-family:system-ui,Verdana,sans-serif;margin:0;padding:16px;background:#0b0f14;color:#eee}"
-        ".brand{font-size:28px;font-weight:700;letter-spacing:-0.5px;color:#fff;margin:0 0 4px}"
-        ".brand span{color:#1fa3ec}"
-        ".sub{color:#6a7a8a;font-size:13px;margin:0 0 18px}"
-        "input,select,textarea{width:100%;padding:10px;margin:4px 0 12px;box-sizing:border-box;"
-        "border-radius:8px;border:1px solid #243040;background:#151c26;color:#eee}"
-        "label{font-size:13px;color:#9aa8b5;display:block}"
-        "h3{margin:22px 0 8px;padding:10px 12px;background:#151c26;border-radius:10px;"
-        "border-left:4px solid #1fa3ec;color:#fff;font-size:16px}"
-        "h3.b{border-left-color:#7c5cff}"
-        "button{width:100%;padding:14px;background:linear-gradient(135deg,#1fa3ec,#0d7ab8);"
-        "color:#fff;border:0;border-radius:10px;font-size:16px;font-weight:600;margin-top:8px}"
-        "a{color:#8cf}.h{color:#6a7a8a;font-size:12px;margin:0 0 8px}"
-        ".srcblk{display:none}"
+        "<meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+        "<title>GlukoView</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F("<style>");
+    diaPortalCss(page);
+    page += F(
         "</style><script>"
         "function diaSrc(pfx,v){"
         "['nightscout','libre','dexcom','guardian'].forEach(function(k){"
@@ -643,13 +808,14 @@ static void handleDiaParamPage() {
         "var a=document.getElementById('userATitle');"
         "if(a)a.style.display=(v==='2')?'block':'none';"
         "}"
-        "</script></head><body>"
-        "<div class=brand>Gluko<span>View</span></div>"
-        "<p class=sub>");
+        "</script></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<p class=sub>");
     page += S(Str::PortalTitle);
-    page += F("</p><p><a href=\"/setup?s=0\">");
-    page += S(Str::WizLink);
-    page += F("</a></p><form method=POST action=/paramsave>");
+    page += F("</p><div class=nav>");
+    diaPortalBtn(page, "/", S(Str::ClHome), "btn-sec");
+    diaPortalBtn(page, "/setup?s=0", S(Str::PortalBtnWizard), "btn-sec");
+    page += F("</div><form method=POST action=/paramsave>");
 
     page += F("<label>");
     page += S(Str::PortalLang);
@@ -752,14 +918,14 @@ static void handleDiaParamPage() {
 
     page += F("<button type=submit>");
     page += S(Str::PortalSave);
-    page += F("</button></form><p><a href=/>");
-    page += S(Str::PortalBack);
-    page += F("</a> | <a href=/nets>");
-    page += S(Str::PortalSavedWifi);
-    page += F("</a></p>");
+    page += F("</button></form><div class=nav>");
+    diaPortalBtn(page, "/", S(Str::ClHome), "btn-sec");
+    diaPortalBtn(page, "/nets", S(Str::PortalBtnWifi), "btn-sec");
+    page += F("</div>");
     if (!diaBoardIsRound()) {
         page += F("<script>diaMode(document.querySelector('[name=disp_mode]').value);</script>");
     }
+    diaPortalAppendLegalNote(page);
     page += F("</body></html>");
 
     Serial.printf("[portal] /param page len=%u freeheap=%u\n", (unsigned)page.length(), (unsigned)ESP.getFreeHeap());
@@ -771,39 +937,78 @@ static void handleDiaNetsPage() {
     refreshPortalSavedNetsHtml();
 
     String page;
-    page.reserve(1400);
-    page += F(
-        "<!DOCTYPE html><html><head><meta charset=UTF-8>"
-        "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-        "<title>GlukoView WiFi</title><style>"
-        "body{font-family:system-ui,Verdana,sans-serif;margin:12px;background:#0b0f14;color:#eee}"
-        "button{width:100%;padding:12px;background:#1fa3ec;color:#fff;border:0;border-radius:8px;font-size:16px;margin-top:8px}"
-        "a{color:#8cf}.box{background:#151c26;padding:14px;border-radius:8px;margin:12px 0}"
-        "</style></head><body><div style=\"font-size:22px;font-weight:700;margin-bottom:4px\">"
-        "Gluko<span style=color:#1fa3ec>View</span></div><h2>");
+    page.reserve(1600);
+    page += F("<!DOCTYPE html><html><head><meta charset=UTF-8>"
+              "<meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+              "<title>GlukoView WiFi</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F("<style>");
+    diaPortalCss(page);
+    page += F("</style></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<h2>");
     page += S(Str::PortalNetsTitle);
-    page += F("</h2><div class=box>");
+    page += F("</h2><div class=card>");
     page += buildSavedNetsListHtml();
-    page += F("</div><p style=\"color:#888\">");
+    page += F("</div><p class=muted>");
     page += S(Str::PortalNetsHint);
-    page += F("</p><form action=/wifi method=get><button type=submit>");
-    page += S(Str::PortalConfigWifi);
-    page += F("</button></form><p><a href=/>");
-    page += S(Str::PortalBackMenu);
-    page += F("</a></p></body></html>");
+    page += F("</p>");
+    diaPortalBtn(page, "/wifi", S(Str::PortalConfigWifi));
+    diaPortalBtn(page, "/", S(Str::ClHome), "btn-sec");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
     wm.server->send(200, "text/html; charset=utf-8", page);
 }
 
-static void diaPinSendForm(WebServer &server, bool bad) {
+static String diaPinSafeNext(const String &raw) {
+    if (!raw.length() || raw.charAt(0) != '/' || raw.startsWith("//")) return String(F("/"));
+    if (raw.indexOf("://") >= 0) return String(F("/"));
+    return raw;
+}
+
+static String diaPinRequestNext(WebServer &server) {
+    if (server.hasArg("next")) return diaPinSafeNext(server.arg("next"));
+    String n = server.uri();
+    if (server.method() == HTTP_GET && server.args() > 0) {
+        bool first = true;
+        for (int i = 0; i < server.args(); i++) {
+            if (server.argName(i) == "next") continue;
+            n += first ? '?' : '&';
+            first = false;
+            n += server.argName(i);
+            n += '=';
+            n += server.arg(i);
+        }
+    }
+    return diaPinSafeNext(n);
+}
+
+static void diaPinHtmlAttr(String &out, const String &in) {
+    for (unsigned i = 0; i < in.length(); i++) {
+        char c = in[i];
+        if (c == '&') out += F("&amp;");
+        else if (c == '"') out += F("&quot;");
+        else if (c == '<') out += F("&lt;");
+        else out += c;
+    }
+}
+
+static void diaPinSendForm(WebServer &server, bool bad, const String &nextIn) {
+    const String next = diaPinSafeNext(nextIn);
     String page;
-    page.reserve(700);
+    page.reserve(900);
     page += F("<!DOCTYPE html><html><head><meta charset=utf-8>"
               "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-              "<title>GlukoView</title><style>"
+              "<title>GlukoView</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F("<style>"
               "body{font-family:sans-serif;background:#111;color:#eee;text-align:center;padding:2rem}"
+              ".gv-logo{margin:0 0 12px}.gv-logo img{max-width:160px;height:auto}"
               "input{font-size:2rem;letter-spacing:.35rem;width:9rem;text-align:center}"
               "button{font-size:1.2rem;margin-top:1rem;padding:.5rem 1.4rem}"
-              ".err{color:#f66}</style></head><body><h1>GlukoView</h1><p>");
+              ".err{color:#f66}</style></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<p>");
     page += S(Str::PinWebHint);
     page += F("</p>");
     if (diaPinLockedOut()) {
@@ -816,61 +1021,69 @@ static void diaPinSendForm(WebServer &server, bool bad) {
         page += F("</p>");
     }
     page += F("<form method=post action=/pin>"
+              "<input type=hidden name=next value=\"");
+    diaPinHtmlAttr(page, next);
+    page += F("\">"
               "<input name=pin inputmode=numeric pattern=\"[0-9]{4}\" maxlength=4 "
               "autocomplete=off required autofocus><br>"
-              "<button type=submit>OK</button></form></body></html>");
+              "<button type=submit>OK</button></form>");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
     server.send(200, "text/html; charset=utf-8", page);
 }
 
-static void diaPinRedirectHome(WebServer &server, bool withCookie) {
+static void diaPinRedirect(WebServer &server, bool withCookie, const String &nextIn) {
+    const String next = diaPinSafeNext(nextIn);
     if (withCookie) {
-        String cookie = String(F("gvpin=")) + diaPinToken() + F("; Path=/; Max-Age=28800; HttpOnly");
+        String cookie = String(F("gvpin=")) + diaPinToken() +
+                        F("; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax");
         server.sendHeader(F("Set-Cookie"), cookie, true);
     }
-    server.sendHeader(F("Location"), F("/"), !withCookie);
+    server.sendHeader(F("Location"), next, !withCookie);
     server.send(302, "text/plain", "OK");
 }
 
 static void handlePinGet() {
     if (!wm.server) return;
+    String next = diaPinRequestNext(*wm.server);
     if (!diaPinIsSet() || diaPinCookieOk(wm.server->header("Cookie"))) {
-        diaPinRedirectHome(*wm.server, false);
+        diaPinRedirect(*wm.server, false, next);
         return;
     }
-    diaPinSendForm(*wm.server, false);
+    diaPinSendForm(*wm.server, false, next);
 }
 
 static void handlePinPost() {
     if (!wm.server) return;
+    String next = diaPinRequestNext(*wm.server);
     if (!diaPinIsSet()) {
-        diaPinRedirectHome(*wm.server, false);
+        diaPinRedirect(*wm.server, false, next);
         return;
     }
     if (diaPinLockedOut()) {
-        diaPinSendForm(*wm.server, false);
+        diaPinSendForm(*wm.server, false, next);
         return;
     }
     String pin = wm.server->arg("pin");
     pin.trim();
     if (diaPinCheck(pin.c_str())) {
-        diaPinRedirectHome(*wm.server, true);
+        diaPinRedirect(*wm.server, true, next);
         return;
     }
-    diaPinSendForm(*wm.server, true);
+    diaPinSendForm(*wm.server, true, next);
 }
 
-/** Brána pred ostatnými stránkami. canHandle beží ešte pred Cookie, preto
- *  sa relácia overí až v handle() a pri platnom kľúči sa požiadavka posunie ďalej. */
+/** Brána ako prvý handler. canHandle beží pred Cookie – relácia až v handle(). */
 class DiaPinGate : public RequestHandler {
 public:
     bool canHandle(HTTPMethod method, String uri) override {
         (void)method;
-        (void)uri;
-        return diaPinIsSet();
+        if (!diaPinIsSet()) return false;
+        return uri != "/pin";
     }
     bool canUpload(String uri) override {
-        (void)uri;
-        return diaPinIsSet();
+        if (!diaPinIsSet()) return false;
+        return uri != "/pin";
     }
     bool handle(WebServer &server, HTTPMethod requestMethod, String requestUri) override {
         if (!diaPinIsSet() || diaPinCookieOk(server.header("Cookie"))) {
@@ -880,7 +1093,7 @@ public:
             }
             return false;
         }
-        diaPinSendForm(server, false);
+        diaPinSendForm(server, false, diaPinRequestNext(server));
         return true;
     }
     void upload(WebServer &server, String requestUri, HTTPUpload &up) override {
@@ -891,6 +1104,90 @@ public:
                 return;
             }
         }
+    }
+};
+
+static void diaLegalSendForm(WebServer &server, const String &nextIn) {
+    const String next = diaPinSafeNext(nextIn);
+    String page;
+    page.reserve(2800);
+    page += F("<!DOCTYPE html><html><head><meta charset=UTF-8>"
+              "<meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+              "<title>GlukoView</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F("<style>");
+    diaPortalCss(page);
+    page += F("</style></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<h1>");
+    page += S(Str::LegalWebTitle);
+    page += F("</h1><p>");
+    page += S(Str::LegalWebBody);
+    page += F("</p><p>");
+    page += S(Str::LegalIndep);
+    page += F("</p><form method=POST action=/legal><input type=hidden name=next value=\"");
+    diaPinHtmlAttr(page, next);
+    page += F("\"><label class=check><input type=checkbox name=ack value=1> ");
+    page += S(Str::LegalWebCheck);
+    page += F("</label><button type=submit id=legalgo disabled>");
+    page += S(Str::LegalWebGo);
+    page += F("</button></form><script>"
+              "document.querySelector('[name=ack]').addEventListener('change',function(){"
+              "document.getElementById('legalgo').disabled=!this.checked;});"
+              "</script>");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
+    server.send(200, "text/html; charset=utf-8", page);
+}
+
+static void handleLegalGet() {
+    if (!wm.server) return;
+    if (diaLegalWebAccepted()) {
+        wm.server->sendHeader(F("Location"), F("/"), true);
+        wm.server->send(302, F("text/plain"), F(""));
+        return;
+    }
+    diaLegalSendForm(*wm.server, diaPinRequestNext(*wm.server));
+}
+
+static void handleLegalPost() {
+    if (!wm.server) return;
+    String next = wm.server->hasArg("next") ? diaPinSafeNext(wm.server->arg("next")) : String(F("/"));
+    if (next == "/legal") next = "/";
+    if (wm.server->hasArg("ack") && wm.server->arg("ack") == "1" && diaLegalAcceptWeb()) {
+        wm.server->sendHeader(F("Location"), next, true);
+        wm.server->send(302, F("text/plain"), F(""));
+        return;
+    }
+    diaLegalSendForm(*wm.server, next);
+}
+
+/** Pred stránkami portálu, ale až po PIN. /legal a /pin prejdú ďalej. */
+class DiaLegalGate : public RequestHandler {
+public:
+    bool canHandle(HTTPMethod method, String uri) override {
+        (void)method;
+        if (diaLegalWebAccepted()) return false;
+        if (uri == "/legal" || uri == "/pin") return false;
+        return true;
+    }
+    bool canUpload(String uri) override {
+        if (diaLegalWebAccepted()) return false;
+        if (uri == "/legal" || uri == "/pin") return false;
+        return true;
+    }
+    bool handle(WebServer &server, HTTPMethod requestMethod, String requestUri) override {
+        (void)requestUri;
+        String next = F("/");
+        if (requestMethod == HTTP_GET) next = diaPinRequestNext(server);
+        else if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) next = F("/wifi");
+        diaLegalSendForm(server, next);
+        return true;
+    }
+    void upload(WebServer &server, String requestUri, HTTPUpload &up) override {
+        (void)server;
+        (void)requestUri;
+        (void)up;
     }
 };
 
@@ -957,7 +1254,7 @@ static void wizApply(int step) {
         auto &p = profiles[slot];
         if (p.dsSource == "nightscout") {
             p.nsUrl = sv.arg("ns_url");
-            p.nsUrl.trim();
+            diaNormalizeNsUrl(p.nsUrl);
             diaApplySecret(p.nsToken, sv.arg("ns_token").c_str());
             wizSet(slot ? custom_p1_ns_url : custom_ns_url, p.nsUrl);
         } else if (p.dsSource == "libre") {
@@ -985,6 +1282,7 @@ static void wizApply(int step) {
         }
         diaConfigSaveProfiles();
         diaConfigPushSlot(slot);
+        // Ciferník odomkne handleSetup po zápise wiz – tu len flag
         forceFetch = true;
         return;
     }
@@ -1080,6 +1378,9 @@ static void handleSetup() {
         wizApply(step);
         int next = wizAdvance(step);
         preferences.putUChar("wiz", next >= 6 ? 255 : (uint8_t)next);
+        // Bez reštartu: po URL/tokeni odomkni UI (inak ostane IP / „Pripájam…“)
+        if (step == 2 || step == 5 || step == 6 || next >= 6)
+            diaAfterSourceConfigured();
         String loc = String("/setup?s=") + String(next);
         sv.sendHeader("Location", loc, true);
         sv.send(302, "text/plain", "");
@@ -1094,19 +1395,17 @@ static void handleSetup() {
     if (step < 0 || step > 6) step = diaBoardIsRound() ? 1 : 0;
 
     String page;
-    page.reserve(4200);
+    page.reserve(4800);
     page += F(
         "<!DOCTYPE html><html><head><meta charset=UTF-8>"
-        "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-        "<title>GlukoView</title><style>"
-        "body{font-family:system-ui,Verdana,sans-serif;margin:0;padding:16px;background:#0b0f14;color:#eee}"
-        "h1{font-size:22px;margin:0 0 12px}label{font-size:13px;color:#9aa8b5;display:block}"
-        "input,select{width:100%;padding:10px;margin:4px 0 12px;box-sizing:border-box;border-radius:8px;"
-        "border:1px solid #243040;background:#151c26;color:#eee}"
-        "button,a.btn{display:block;width:100%;padding:14px;background:#1fa3ec;color:#fff;border:0;"
-        "border-radius:10px;font-size:16px;text-align:center;text-decoration:none;box-sizing:border-box;margin-top:8px}"
-        "a{color:#8cf}.muted{color:#9ab;font-size:14px;line-height:1.4}"
-        "</style></head><body><h1>");
+        "<meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+        "<title>GlukoView</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F("<style>");
+    diaPortalCss(page);
+    page += F("</style></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<h1>");
     page += S(Str::WizLink);
     page += F("</h1>");
 
@@ -1212,6 +1511,8 @@ static void handleSetup() {
         page += F("</button></form>");
     } else {
         preferences.putUChar("wiz", 255);
+        // Hotová stránka + hotový zdroj → odomkni ciferník (bez reštartu)
+        if (!diaNeedsSourceSetup()) diaAfterSourceConfigured();
         page += F("<p>");
         page += (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : String("—");
         page += F("</p><p>");
@@ -1269,33 +1570,116 @@ static void handleSetup() {
         }
         page += F("<p class=muted>");
         page += S(Str::WizUnplug);
-        page += F("</p><p><a href=\"/param?all=1\">");
-        page += S(Str::ClParams);
-        page += F("</a></p>");
+        page += F("</p><div class=nav>");
+        diaPortalBtn(page, "/param?all=1", S(Str::PortalBtnParams));
+        if (showA || showB || profiles[0].dsSource.equalsIgnoreCase("guardian"))
+            diaPortalBtn(page, "/carelink", S(Str::PortalBtnCarelink), "btn-cl");
+        diaPortalBtn(page, "/nets", S(Str::PortalBtnWifi), "btn-sec");
+        diaPortalBtn(page, "/", S(Str::ClHome), "btn-sec");
+        page += F("</div>");
     }
+    diaPortalAppendLegalNote(page);
     page += F("</body></html>");
-    sv.send(200, "text/html", page);
+    sv.send(200, "text/html; charset=utf-8", page);
+}
+
+static void handleDiagPage() {
+    if (!wm.server) return;
+    String report;
+    diaDiagFormat(report);
+    String page;
+    page.reserve(report.length() + 1200);
+    page += F("<!DOCTYPE html><html><head><meta charset=UTF-8>"
+              "<meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+              "<title>GlukoView</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F("<style>");
+    diaPortalCss(page);
+    page += F("pre{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.35}"
+              "</style></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<p>");
+    page += S(Str::PortalDiagLead);
+    page += F("</p><pre>");
+    for (unsigned i = 0; i < report.length(); i++) {
+        const char c = report[i];
+        if (c == '&') page += F("&amp;");
+        else if (c == '<') page += F("&lt;");
+        else page += c;
+    }
+    page += F("</pre><div class=nav>");
+    diaPortalBtn(page, "/diag.txt", "glukoview-diag.txt");
+    diaPortalBtn(page, "/", S(Str::ClHome), "btn-sec");
+    page += F("</div>");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
+    wm.server->send(200, "text/html; charset=utf-8", page);
+}
+
+static void handleDiagFile() {
+    if (!wm.server) return;
+    String report;
+    diaDiagFormat(report);
+    wm.server->sendHeader(F("Content-Disposition"), F("attachment; filename=glukoview-diag.txt"));
+    wm.server->send(200, "text/plain; charset=utf-8", report);
 }
 
 static void bindWmWebServer() {
     if (!wm.server) return;
     const char *hdrs[] = {"Cookie"};
     wm.server->collectHeaders(hdrs, 1);
-    // Prepíše WM root: captive portal → /wifi, po pripojení → /param
+    // Root: AP→/wifi, nedokončený setup→/setup, hotové→prehľad
     wm.server->on("/", HTTP_GET, handlePortalHome);
     wm.server->on("/pin", HTTP_GET, handlePinGet);
     wm.server->on("/pin", HTTP_POST, handlePinPost);
-    wm.server->addHandler(new DiaPinGate());
     wm.server->on("/param", handleDiaParamPage);
     wm.server->on("/setup", HTTP_GET, handleSetup);
     wm.server->on("/setup", HTTP_POST, handleSetup);
     wm.server->on("/nets", handleDiaNetsPage);
+    wm.server->on("/legal", HTTP_GET, handleLegalGet);
+    wm.server->on("/legal", HTTP_POST, handleLegalPost);
+    wm.server->on("/diag", HTTP_GET, handleDiagPage);
+    wm.server->on("/diag.txt", HTTP_GET, handleDiagFile);
     diaPortalRegisterCarelinkRoutes();
+    // Posledný prepend je prvý v reťazi: PIN, potom súhlas, potom stránky.
+    static_cast<DiaWebServerPinAccess *>(wm.server.get())
+        ->prependHandler(new DiaLegalGate());
+    static_cast<DiaWebServerPinAccess *>(wm.server.get())
+        ->prependHandler(new DiaPinGate());
 }
 
 static void configModeCallback(WiFiManager *myWiFiManager) {
     (void)myWiFiManager;
     showBootStatus("WiFi SETUP", S(Str::BootSetupHint));
+}
+
+static String s_wmHead;
+
+/** Skladové stránky WiFiManagera nemajú naše </body>. Veta ide hore, malým písmom. */
+static void diaPortalRefreshWmHead() {
+    s_wmHead = "";
+    diaPortalAppendFaviconLink(s_wmHead);
+    String foot;
+    diaPinHtmlAttr(foot, S(Str::LegalFoot));
+    foot += F(" ");
+    diaPinHtmlAttr(foot, S(Str::LegalIndep));
+    s_wmHead += F("<meta name=\"gv-legal\" content=\"");
+    s_wmHead += foot;
+    s_wmHead += F("\"><style>"
+                  ".gv-logo{text-align:center;margin:8px 0}"
+                  ".gv-logo img{max-width:min(160px,70vw);height:auto}"
+                  ".legalnote{margin:0 0 10px;color:#6a7682;font-size:11px;line-height:1.4}"
+                  "</style><script>"
+                  "document.addEventListener('DOMContentLoaded',function(){"
+                  "if(document.querySelector('.legalnote'))return;"
+                  "var m=document.querySelector('meta[name=gv-legal]');"
+                  "if(!m||!document.body)return;"
+                  "var p=document.createElement('p');"
+                  "p.className='legalnote';"
+                  "p.textContent=m.content;"
+                  "document.body.insertBefore(p,document.body.firstChild);"
+                  "});</script>");
+    wm.setCustomHeadElement(s_wmHead.c_str());
 }
 
 void diaWifiSetupManager() {
@@ -1307,7 +1691,7 @@ void diaWifiSetupManager() {
     std::vector<const char *> portalMenu = {"wifi", "param", "custom", "info", "sep", "exit"};
     wm.setMenu(portalMenu);
     wm.setShowInfoUpdate(false);
-    wm.setCustomHeadElement("");
+    diaPortalRefreshWmHead();
 }
 
 void diaWifiAddParameters() {
@@ -1322,8 +1706,8 @@ void diaWifiAddParameters() {
         : nullptr;
     custom_p0_name = new WiFiManagerParameter("p0_name", "Dieta A meno", profiles[0].name.c_str(), 24);
     custom_source = new WiFiManagerParameter("ds_source", "A zdroj (libre/ns/dexcom/guardian)", profiles[0].dsSource.c_str(), 20);
-    custom_ns_url = new WiFiManagerParameter("ns_url", "A Nightscout URL", profiles[0].nsUrl.c_str(), 100);
-    custom_ns_token = new WiFiManagerParameter("ns_token", "A Nightscout token", "", 64);
+    custom_ns_url = new WiFiManagerParameter("ns_url", "A Nightscout URL", profiles[0].nsUrl.c_str(), 128);
+    custom_ns_token = new WiFiManagerParameter("ns_token", "A Nightscout API secret", "", 128);
     custom_llu_user = new WiFiManagerParameter("llu_user", "A Libre email", profiles[0].libreUser.c_str(), 64);
     custom_llu_pwd = new WiFiManagerParameter("llu_pwd", "A Libre heslo", "", 64);
     custom_libre_patient = new WiFiManagerParameter("libre_pref", "A Libre pacient", profiles[0].libre_patient_pref.c_str(), 64);
@@ -1339,8 +1723,8 @@ void diaWifiAddParameters() {
     if (dualOk) {
         custom_p1_name = new WiFiManagerParameter("p1_name", "Dieta B meno", profiles[1].name.c_str(), 24);
         custom_p1_source = new WiFiManagerParameter("p1_src", "B zdroj (off/libre/ns/dexcom/guardian)", profiles[1].dsSource.c_str(), 20);
-        custom_p1_ns_url = new WiFiManagerParameter("p1_nsu", "B Nightscout URL", profiles[1].nsUrl.c_str(), 100);
-        custom_p1_ns_token = new WiFiManagerParameter("p1_nst", "B Nightscout token", "", 64);
+        custom_p1_ns_url = new WiFiManagerParameter("p1_nsu", "B Nightscout URL", profiles[1].nsUrl.c_str(), 128);
+        custom_p1_ns_token = new WiFiManagerParameter("p1_nst", "B Nightscout API secret", "", 128);
         custom_p1_llu_user = new WiFiManagerParameter("p1_llu", "B Libre email", profiles[1].libreUser.c_str(), 64);
         custom_p1_llu_pwd = new WiFiManagerParameter("p1_llp", "B Libre heslo", "", 64);
         custom_p1_libre_pref = new WiFiManagerParameter("p1_lpf", "B Libre pacient", profiles[1].libre_patient_pref.c_str(), 64);
@@ -1513,6 +1897,8 @@ static void restore_ui_after_wifi() {
 }
 
 /** Po WiFi: ak chýba zdroj, držať návod s IP; inak bežný ciferník. */
+static bool s_restoreFaceAfterLegal = false;
+
 static void afterWifiConnectedUi() {
     configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
     if (diaNeedsSourceSetup()) {
@@ -1520,6 +1906,19 @@ static void afterWifiConnectedUi() {
         return;
     }
     showBootStatus(S(Str::BootConnected), S(Str::Loading));
+    // Veta už svietila počas pripájania. Pri rýchlom WiFi ešte chvíľu ostane,
+    // fetch sa spustí hneď po návrate z diaWifiEnsureConnected.
+    if (diaUiBootLegalHolding()) {
+        s_restoreFaceAfterLegal = true;
+        return;
+    }
+    restore_ui_after_wifi();
+}
+
+void diaWifiPollBootLegal() {
+    if (!s_restoreFaceAfterLegal) return;
+    if (diaUiBootLegalHolding()) return;
+    s_restoreFaceAfterLegal = false;
     restore_ui_after_wifi();
 }
 
@@ -1549,16 +1948,53 @@ bool diaWifiEnsureConnected() {
         showBootStatus("WiFi SETUP", S(Str::BootSetupHint));
 
         wm.setAPCallback(configModeCallback);
-        wm.setAPStaticIPConfig(IPAddress(10, 0, 0, 1), IPAddress(10, 0, 0, 1), IPAddress(255, 255, 255, 0));
-        wm.setConfigPortalBlocking(true);
+        wm.setAPStaticIPConfig(IPAddress(10, 1, 1, 1), IPAddress(10, 1, 1, 1), IPAddress(255, 255, 255, 0));
+        // Non-blocking: počas AP beží LVGL + BOOT → menu (factory reset, PIN, …)
+        wm.setConfigPortalBlocking(false);
         wm.setSaveConnect(true);
         wm.setCaptivePortalEnable(true);
         // Ak už máme uložené siete – timeout, potom znova skús STA (presun do dielne)
-        // Prvé nastavenie (0 sietí) – čakaj dlhšie
+        // Prvé nastavenie (0 sietí) – čakaj bez timeoutu (zatvorí user / connect)
         wm.setConfigPortalTimeout(savedCount > 0 ? kPortalTimeoutSec : 0);
         refreshPortalSavedNetsHtml();
 
-        if (wm.startConfigPortal("GlukoView")) {
+        wm.startConfigPortal("GlukoView");
+        bool portalOk = false;
+        uint32_t lastLv = millis();
+        uint32_t lastWm = 0;
+        bool bootWasDown = false;
+        uint32_t bootDownAt = 0;
+        while (wm.getConfigPortalActive()) {
+            // Najprv UI – wm.process()/captive portal inak blokuje Späť v menu
+            uint32_t now = millis();
+            lv_tick_inc(now - lastLv);
+            lastLv = now;
+            lv_timer_handler();
+            bool down = digitalRead(BOOT_BTN) == LOW;
+            if (down && !bootWasDown) {
+                bootDownAt = now;
+            } else if (!down && bootWasDown) {
+                uint32_t held = now - bootDownAt;
+                if (held >= 50 && held < 2000) diaUiOpenSettings();
+            }
+            bootWasDown = down;
+
+            if (now - lastWm >= 15) {
+                lastWm = now;
+                if (wm.process()) {
+                    portalOk = true;
+                    break;
+                }
+                if (WiFi.status() == WL_CONNECTED) {
+                    portalOk = true;
+                    wm.stopConfigPortal();
+                    break;
+                }
+            }
+            delay(1);
+        }
+
+        if (portalOk || WiFi.status() == WL_CONNECTED) {
             autoSaveNetwork();
             Serial.printf("Portal OK, SSID='%s'\n", WiFi.SSID().c_str());
             wifi_was_connected = true;
@@ -1603,23 +2039,57 @@ void diaWifiSavePortalConfigIfNeeded() {
         profiles[1].dsSource = "off";
         if (custom_p1_source) wizSet(custom_p1_source, "off");
     }
-    if (custom_p0_name) profiles[0].name = custom_p0_name->getValue();
-    profiles[0].dsSource = custom_source->getValue();
-    profiles[0].nsUrl = custom_ns_url->getValue();
-    diaApplySecret(profiles[0].nsToken, custom_ns_token->getValue());
-    profiles[0].libreUser = custom_llu_user ? String(custom_llu_user->getValue()) : "";
-    if (custom_llu_pwd) diaApplySecret(profiles[0].librePwd, custom_llu_pwd->getValue());
-    profiles[0].libreRegion = custom_llu_region ? String(custom_llu_region->getValue()) : "eu";
-    profiles[0].libre_patient_pref = custom_libre_patient ? String(custom_libre_patient->getValue()) : "";
-    profiles[0].libre_patient_pref.trim();
-    // CareLink pacient len ak je A Guardian – inak nechať uložené (Dexcom/Libre A nesmie dostať CL pacienta z B)
-    if (profiles[0].dsSource.equalsIgnoreCase("guardian") && custom_cl_patient) {
-        profiles[0].carelink_patient_pref = custom_cl_patient->getValue();
-        profiles[0].carelink_patient_pref.trim();
+    if (custom_p0_name) {
+        String n = portalArgOrParam("p0_name", custom_p0_name);
+        if (n.length()) profiles[0].name = n;
     }
-    profiles[0].dexUser = custom_dx_user ? String(custom_dx_user->getValue()) : "";
-    if (custom_dx_pwd) diaApplySecret(profiles[0].dexPwd, custom_dx_pwd->getValue());
-    profiles[0].dexRegion = custom_dx_region ? String(custom_dx_region->getValue()) : "ous";
+    {
+        String src = portalArgOrParam("ds_source", custom_source);
+        if (src.length()) profiles[0].dsSource = src;
+    }
+    {
+        String u = portalArgOrParam("ns_url", custom_ns_url);
+        if (u.length() || (wm.server && wm.server->hasArg("ns_url"))) {
+            profiles[0].nsUrl = u;
+            diaNormalizeNsUrl(profiles[0].nsUrl);
+        }
+    }
+    diaApplySecret(profiles[0].nsToken, portalArgOrParam("ns_token", custom_ns_token).c_str());
+    {
+        String u = portalArgOrParam("llu_user", custom_llu_user);
+        if (u.length() || (wm.server && wm.server->hasArg("llu_user"))) profiles[0].libreUser = u;
+    }
+    diaApplySecret(profiles[0].librePwd, portalArgOrParam("llu_pwd", custom_llu_pwd).c_str());
+    {
+        String r = portalArgOrParam("llu_reg", custom_llu_region);
+        if (r.length()) profiles[0].libreRegion = r;
+        else if (!custom_llu_region) profiles[0].libreRegion = "eu";
+    }
+    {
+        String pf = portalArgOrParam("libre_pref", custom_libre_patient);
+        if (pf.length() || (wm.server && wm.server->hasArg("libre_pref"))) {
+            profiles[0].libre_patient_pref = pf;
+            profiles[0].libre_patient_pref.trim();
+        }
+    }
+    // CareLink pacient len ak je A Guardian – inak nechať uložené (Dexcom/Libre A nesmie dostať CL pacienta z B)
+    if (profiles[0].dsSource.equalsIgnoreCase("guardian")) {
+        String pf = portalArgOrParam("cl_pref", custom_cl_patient);
+        if (pf.length() || (wm.server && wm.server->hasArg("cl_pref"))) {
+            profiles[0].carelink_patient_pref = pf;
+            profiles[0].carelink_patient_pref.trim();
+        }
+    }
+    {
+        String u = portalArgOrParam("dx_user", custom_dx_user);
+        if (u.length() || (wm.server && wm.server->hasArg("dx_user"))) profiles[0].dexUser = u;
+    }
+    diaApplySecret(profiles[0].dexPwd, portalArgOrParam("dx_pwd", custom_dx_pwd).c_str());
+    {
+        String r = portalArgOrParam("dx_reg", custom_dx_region);
+        if (r.length()) profiles[0].dexRegion = r;
+        else if (!custom_dx_region) profiles[0].dexRegion = "ous";
+    }
     if (profiles[0].dsSource == "dexcom") {
         profiles[0].dsUser = profiles[0].dexUser;
         profiles[0].dsPwd = profiles[0].dexPwd;
@@ -1629,31 +2099,82 @@ void diaWifiSavePortalConfigIfNeeded() {
         profiles[0].dsPwd = profiles[0].librePwd;
         profiles[0].dsRegion = profiles[0].libreRegion;
     }
-    profiles[0].targetLow = String(custom_t_low->getValue()).toFloat();
-    profiles[0].targetHigh = String(custom_t_high->getValue()).toFloat();
-    profiles[0].targetCrit = String(custom_t_crit->getValue()).toFloat();
+    {
+        String v = portalArgOrParam("t_low", custom_t_low);
+        if (v.length()) profiles[0].targetLow = v.toFloat();
+    }
+    {
+        String v = portalArgOrParam("t_high", custom_t_high);
+        if (v.length()) profiles[0].targetHigh = v.toFloat();
+    }
+    {
+        String v = portalArgOrParam("t_crit", custom_t_crit);
+        if (v.length()) profiles[0].targetCrit = v.toFloat();
+    }
 
-    if (custom_p1_name) profiles[1].name = custom_p1_name->getValue();
-    if (custom_p1_source) profiles[1].dsSource = custom_p1_source->getValue();
-    if (custom_p1_ns_url) profiles[1].nsUrl = custom_p1_ns_url->getValue();
-    if (custom_p1_ns_token) diaApplySecret(profiles[1].nsToken, custom_p1_ns_token->getValue());
-    if (custom_p1_llu_user) profiles[1].libreUser = custom_p1_llu_user->getValue();
-    if (custom_p1_llu_pwd) diaApplySecret(profiles[1].librePwd, custom_p1_llu_pwd->getValue());
-    if (custom_p1_llu_reg) profiles[1].libreRegion = custom_p1_llu_reg->getValue();
+    if (custom_p1_name) {
+        String n = portalArgOrParam("p1_name", custom_p1_name);
+        if (n.length()) profiles[1].name = n;
+    }
+    if (custom_p1_source) {
+        String s = portalArgOrParam("p1_src", custom_p1_source);
+        if (s.length()) profiles[1].dsSource = s;
+    }
+    if (custom_p1_ns_url) {
+        String u = portalArgOrParam("p1_nsu", custom_p1_ns_url);
+        if (u.length() || (wm.server && wm.server->hasArg("p1_nsu"))) {
+            profiles[1].nsUrl = u;
+            diaNormalizeNsUrl(profiles[1].nsUrl);
+        }
+    }
+    if (custom_p1_ns_token)
+        diaApplySecret(profiles[1].nsToken, portalArgOrParam("p1_nst", custom_p1_ns_token).c_str());
+    if (custom_p1_llu_user) {
+        String u = portalArgOrParam("p1_llu", custom_p1_llu_user);
+        if (u.length() || (wm.server && wm.server->hasArg("p1_llu"))) profiles[1].libreUser = u;
+    }
+    if (custom_p1_llu_pwd)
+        diaApplySecret(profiles[1].librePwd, portalArgOrParam("p1_llp", custom_p1_llu_pwd).c_str());
+    if (custom_p1_llu_reg) {
+        String r = portalArgOrParam("p1_llr", custom_p1_llu_reg);
+        if (r.length()) profiles[1].libreRegion = r;
+    }
     if (custom_p1_libre_pref) {
-        profiles[1].libre_patient_pref = custom_p1_libre_pref->getValue();
-        profiles[1].libre_patient_pref.trim();
+        String pf = portalArgOrParam("p1_lpf", custom_p1_libre_pref);
+        if (pf.length() || (wm.server && wm.server->hasArg("p1_lpf"))) {
+            profiles[1].libre_patient_pref = pf;
+            profiles[1].libre_patient_pref.trim();
+        }
     }
     if (custom_p1_cl_pref && profiles[1].dsSource.equalsIgnoreCase("guardian")) {
-        profiles[1].carelink_patient_pref = custom_p1_cl_pref->getValue();
-        profiles[1].carelink_patient_pref.trim();
+        String pf = portalArgOrParam("p1_cpf", custom_p1_cl_pref);
+        if (pf.length() || (wm.server && wm.server->hasArg("p1_cpf"))) {
+            profiles[1].carelink_patient_pref = pf;
+            profiles[1].carelink_patient_pref.trim();
+        }
     }
-    if (custom_p1_dx_user) profiles[1].dexUser = custom_p1_dx_user->getValue();
-    if (custom_p1_dx_pwd) diaApplySecret(profiles[1].dexPwd, custom_p1_dx_pwd->getValue());
-    if (custom_p1_dx_reg) profiles[1].dexRegion = custom_p1_dx_reg->getValue();
-    if (custom_p1_t_low) profiles[1].targetLow = String(custom_p1_t_low->getValue()).toFloat();
-    if (custom_p1_t_high) profiles[1].targetHigh = String(custom_p1_t_high->getValue()).toFloat();
-    if (custom_p1_t_crit) profiles[1].targetCrit = String(custom_p1_t_crit->getValue()).toFloat();
+    if (custom_p1_dx_user) {
+        String u = portalArgOrParam("p1_dxu", custom_p1_dx_user);
+        if (u.length() || (wm.server && wm.server->hasArg("p1_dxu"))) profiles[1].dexUser = u;
+    }
+    if (custom_p1_dx_pwd)
+        diaApplySecret(profiles[1].dexPwd, portalArgOrParam("p1_dxp", custom_p1_dx_pwd).c_str());
+    if (custom_p1_dx_reg) {
+        String r = portalArgOrParam("p1_dxr", custom_p1_dx_reg);
+        if (r.length()) profiles[1].dexRegion = r;
+    }
+    if (custom_p1_t_low) {
+        String v = portalArgOrParam("p1_t_low", custom_p1_t_low);
+        if (v.length()) profiles[1].targetLow = v.toFloat();
+    }
+    if (custom_p1_t_high) {
+        String v = portalArgOrParam("p1_t_high", custom_p1_t_high);
+        if (v.length()) profiles[1].targetHigh = v.toFloat();
+    }
+    if (custom_p1_t_crit) {
+        String v = portalArgOrParam("p1_t_crit", custom_p1_t_crit);
+        if (v.length()) profiles[1].targetCrit = v.toFloat();
+    }
     if (profiles[1].dsSource == "dexcom") {
         profiles[1].dsUser = profiles[1].dexUser;
         profiles[1].dsPwd = profiles[1].dexPwd;
@@ -1663,12 +2184,17 @@ void diaWifiSavePortalConfigIfNeeded() {
         profiles[1].dsPwd = profiles[1].librePwd;
         profiles[1].dsRegion = profiles[1].libreRegion;
     }
-    String unitsVal = custom_units->getValue();
-    unitsVal.toLowerCase();
-    use_mgdl = (unitsVal == "mgdl" || unitsVal == "mg/dl");
-    String tlsVal = custom_tls->getValue();
-    tlsVal.toLowerCase();
-    tls_insecure = !(tlsVal == "nie" || tlsVal == "no" || tlsVal == "0");
+    {
+        String unitsVal = portalArgOrParam("units", custom_units);
+        unitsVal.toLowerCase();
+        if (unitsVal.length()) use_mgdl = (unitsVal == "mgdl" || unitsVal == "mg/dl");
+    }
+    {
+        String tlsVal = portalArgOrParam("tls_skip", custom_tls);
+        tlsVal.toLowerCase();
+        if (tlsVal.length())
+            tls_insecure = !(tlsVal == "nie" || tlsVal == "no" || tlsVal == "0");
+    }
 
     diaConfigClearSessions();
     diaConfigPushSlot(diaShownSlot());
@@ -1684,6 +2210,7 @@ void diaWifiSavePortalConfigIfNeeded() {
             langVal.toLowerCase();
             diaI18nSet(diaI18nFromCode(langVal.c_str()));
             diaI18nMarkSetupDone();
+            diaPortalRefreshWmHead();
         }
     }
 
@@ -1693,14 +2220,7 @@ void diaWifiSavePortalConfigIfNeeded() {
         diaConfigPushSlot(0);
         if (!diaBoardIsRound() && display_mode >= 2) diaConfigPushSlot(1);
         diaUiApplyDisplayMode();
-        // Ciferník až keď je zdroj skutočne pripravený – inak IP (nie „Config“/Sync)
-        if (diaNeedsSourceSetup()) {
-            forceFetch = false;
-            showConnectedPortalHint();
-        } else {
-            forceFetch = true;
-            restore_ui_after_wifi();
-        }
+        diaAfterSourceConfigured();
         Serial.println("[wifi] param saved, bez restartu");
         return;
     }

@@ -1,6 +1,7 @@
 #include "dia_fetch.h"
 #include "dia_carelink.h"
 #include "dia_config.h"
+#include "dia_diag.h"
 #include "dia_glucose.h"
 #include "dia_tls.h"
 #include "dia_ui.h"
@@ -10,7 +11,9 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include "mbedtls/sha1.h"
 #include "mbedtls/sha256.h"
+#include <ctype.h>
 #include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
 #include <esp_idf_version.h>
@@ -34,6 +37,8 @@ static void diaFetchBreathe(unsigned ms) {
 // Watchdog zvýši epoch → task nedokončí zvyšné sloty (žiadne prekryté TLS)
 static volatile uint32_t s_fetchEpoch = 0;
 static uint32_t s_fetchRunEpoch = 0;
+/** Druhý slot ešte nemá číslo. Graf Libre počká, aby nevisel pred ním. */
+static bool s_holdLibreGraph = false;
 
 static bool diaFetchAborted() {
     return s_fetchRunEpoch != s_fetchEpoch;
@@ -107,19 +112,41 @@ static void addLibreHeaders(HTTPClient &http, bool withAuth) {
     }
 }
 
+/** Libre nepodpisuje Let's Encrypt. Keď overenie spadne, druhý pokus bez neho, ako Nightscout. */
+static int libreHttp(const String &url, bool post, const String *body, bool withAuth, String &payload) {
+    payload = "";
+    int httpCode = -1;
+    for (int pass = 0; pass < 2; pass++) {
+        const bool insecure = (pass == 0) ? tls_insecure : true;
+        if (pass > 0) {
+            if (httpCode > 0 || tls_insecure) break;
+            Serial.println("Libre TLS zlyhal – retry setInsecure");
+            diaFetchBreathe(300);
+        }
+        WiFiClientSecure client;
+        configureTlsClient(client, insecure);
+        HTTPClient http;
+        http.setTimeout(post ? 15000 : 10000);
+        if (!http.begin(client, url)) {
+            httpCode = -1;
+            continue;
+        }
+        addLibreHeaders(http, withAuth);
+        httpCode = post ? http.POST(body ? *body : emptyString) : http.GET();
+        if (httpCode > 0) payload = http.getString();
+        http.end();
+        if (httpCode > 0) break;
+    }
+    return httpCode;
+}
+
 static bool libreLogin() {
+    diaDiagStep(dia_active_slot, DiaDiagStep::Login);
     if (libreUser.length() == 0 || librePwd.length() == 0) return false;
 
     for (int attempt = 0; attempt < 2; attempt++) {
         String base = getLibreBaseUrl(libreRegion);
         String url = base + "/llu/auth/login";
-
-        WiFiClientSecure client;
-        configureTlsClient(client, tls_insecure);
-        HTTPClient http;
-        http.setTimeout(15000);
-        http.begin(client, url);
-        addLibreHeaders(http, false);
 
         JsonDocument body;
         body["email"] = libreUser;
@@ -127,9 +154,8 @@ static bool libreLogin() {
         String bodyStr;
         serializeJson(body, bodyStr);
 
-        int httpCode = http.POST(bodyStr);
-        String payload = (httpCode > 0) ? http.getString() : "";
-        http.end();
+        String payload;
+        int httpCode = libreHttp(url, true, &bodyStr, false, payload);
 
         if (httpCode != HTTP_CODE_OK) {
             Serial.printf("Libre login HTTP %d\n", httpCode);
@@ -207,9 +233,19 @@ static void libreRememberPatients(JsonArray arr) {
         list += "\t";
         list += name;
     }
-    if (list.length() == 0 || list == libre_patient_list) return;
+    if (list.length() == 0) return;
     libre_patient_list = list;
-    preferences.putString("llu_pats", list);
+    if (dia_active_slot >= 0 && dia_active_slot < DIA_PROFILE_COUNT) {
+        profiles[dia_active_slot].libre_patient_list = list;
+        char key[12];
+        snprintf(key, sizeof(key), "p%d_lpl", dia_active_slot);
+        String prev = preferences.isKey(key) ? preferences.getString(key, "") : "";
+        if (prev != list) preferences.putString(key, list);
+    }
+    if (dia_active_slot == 0) {
+        String prev = preferences.isKey("llu_pats") ? preferences.getString("llu_pats", "") : "";
+        if (prev != list) preferences.putString("llu_pats", list);
+    }
 }
 
 /** Vyber index connection podľa preferencie (patientId, meno alebo číslo 1, 2…). -1 = nič. */
@@ -271,7 +307,61 @@ static int libreFindConnectionIndex(JsonArray arr, const String &prefIn) {
 }
 
 // 1 = OK, 0 = auth (treba re-login), -1 = sieť/DNS (token nechať)
+static void libreAppendGraph(bool *hasSrcDelta, float *srcDeltaMmol) {
+    if (libre_patient_id.length() == 0) return;
+    const uint32_t heapNow = ESP.getFreeHeap();
+    if (heapNow < 70000 || diaFetchAborted()) {
+        Serial.printf("Libre graph: skip (heap=%u)\n", (unsigned)heapNow);
+        return;
+    }
+    diaDiagStep(dia_active_slot, DiaDiagStep::Graph);
+    String gurl = getLibreBaseUrl(libreRegion) + "/llu/connections/" + libre_patient_id + "/graph";
+    int gcode = -1;
+    String gpayload;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (diaFetchAborted()) break;
+        if (attempt > 0) diaFetchBreathe(400);
+        else diaFetchBreathe(200);
+        gcode = libreHttp(gurl, false, nullptr, true, gpayload);
+        if (gcode == HTTP_CODE_OK) break;
+    }
+    if (gcode != HTTP_CODE_OK) {
+        Serial.printf("Libre graph HTTP %d (hodnota z connections ostava)\n", gcode);
+        return;
+    }
+    JsonDocument filter;
+    filter["data"]["graphData"][0]["ValueInMgPerDl"] = true;
+    filter["data"]["graphData"][0]["Value"] = true;
+    JsonDocument gdoc;
+    if (deserializeJson(gdoc, gpayload, DeserializationOption::Filter(filter))) return;
+    gpayload = "";
+    JsonArray gd = gdoc["data"]["graphData"].as<JsonArray>();
+    if (gd.isNull() || gd.size() < 1) return;
+    size_t n = gd.size();
+    if (hasSrcDelta && srcDeltaMmol && !*hasSrcDelta && n >= 2) {
+        float newest = gd[n - 1]["ValueInMgPerDl"] | gd[n - 1]["Value"] | 0.0f;
+        float prev = gd[n - 2]["ValueInMgPerDl"] | gd[n - 2]["Value"] | 0.0f;
+        if (newest > 0.0f && prev > 0.0f) {
+            *srcDeltaMmol = mgdl_to_mmol(newest) - mgdl_to_mmol(prev);
+            *hasSrcDelta = true;
+        }
+    }
+    size_t start = (n > DIA_HISTORY_MAX) ? (n - DIA_HISTORY_MAX) : 0;
+    float histAsc[DIA_HISTORY_MAX];
+    int histN = 0;
+    for (size_t i = start; i < n && histN < DIA_HISTORY_MAX; i++) {
+        float v = gd[i]["ValueInMgPerDl"] | gd[i]["Value"] | 0.0f;
+        if (v > 0.0f) histAsc[histN++] = mgdl_to_mmol(v);
+    }
+    if (histN > 0) {
+        float histNf[DIA_HISTORY_MAX];
+        for (int i = 0; i < histN; i++) histNf[i] = histAsc[histN - 1 - i];
+        glucoseHistorySetNewestFirst(histNf, histN);
+    }
+}
+
 static int libreFetchConnections() {
+    diaDiagStep(dia_active_slot, DiaDiagStep::Connections);
     float mgdl = 0.0f;
     int trendArrow = 0;
     long ts = 0;
@@ -293,18 +383,8 @@ static int libreFetchConnections() {
                               (unsigned)ESP.getFreeHeap());
                 diaFetchBreathe(600);
             }
-            WiFiClientSecure client;
-            configureTlsClient(client, tls_insecure);
-            HTTPClient http;
-            http.setTimeout(10000);
-            if (!http.begin(client, url)) {
-                Serial.println("Libre connections: begin fail");
-                continue;
-            }
-            addLibreHeaders(http, true);
-            httpCode = http.GET();
-            payload = (httpCode > 0) ? http.getString() : "";
-            http.end();
+            httpCode = libreHttp(url, false, nullptr, true, payload);
+            if (httpCode < 0) Serial.println("Libre connections: begin fail");
             if (httpCode == HTTP_CODE_OK) break;
             if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403) break;
             Serial.printf("Libre connections HTTP %d (pokus %d/2)\n", httpCode, attempt + 1);
@@ -346,13 +426,13 @@ static int libreFetchConnections() {
         JsonObject gm = conn["glucoseMeasurement"].as<JsonObject>();
         if (gm.isNull()) {
             Serial.println("Libre: glucoseMeasurement prazdne");
-            return -1;
+            return -2;
         }
 
         mgdl = gm["ValueInMgPerDl"] | 0.0f;
         if (mgdl <= 0.0f) {
             Serial.println("Libre: ValueInMgPerDl=0");
-            return -1;
+            return -2;
         }
 
         trendArrow = gm["TrendArrow"] | 0;
@@ -378,69 +458,11 @@ static int libreFetchConnections() {
         hasSrcDelta = true;
     }
 
-    // Graph = sparkline. Skip len pri low heap / abort (I2S už uvoľnené → dual zvládne).
-    const uint32_t heapNow = ESP.getFreeHeap();
-    if (libre_patient_id.length() > 0 && (heapNow < 70000 || diaFetchAborted())) {
-        Serial.printf("Libre graph: skip (heap=%u)\n", (unsigned)heapNow);
-    } else if (libre_patient_id.length() > 0) {
-        String gurl = getLibreBaseUrl(libreRegion) + "/llu/connections/" + libre_patient_id + "/graph";
-        int gcode = -1;
-        String gpayload;
-        for (int attempt = 0; attempt < 2; attempt++) {
-            if (diaFetchAborted()) break;
-            if (attempt > 0) diaFetchBreathe(400);
-            else diaFetchBreathe(200);
-            WiFiClientSecure gclient;
-            configureTlsClient(gclient, tls_insecure);
-            HTTPClient ghttp;
-            ghttp.setTimeout(10000);
-            ghttp.begin(gclient, gurl);
-            addLibreHeaders(ghttp, true);
-            gcode = ghttp.GET();
-            gpayload = (gcode > 0) ? ghttp.getString() : "";
-            ghttp.end();
-            if (gcode == HTTP_CODE_OK) break;
-        }
-        if (gcode != HTTP_CODE_OK) {
-            Serial.printf("Libre graph HTTP %d (hodnota z connections ostava)\n", gcode);
-        }
-
-        if (gcode == HTTP_CODE_OK) {
-            // Filter: len hodnoty – graph JSON je veľký
-            JsonDocument filter;
-            filter["data"]["graphData"][0]["ValueInMgPerDl"] = true;
-            filter["data"]["graphData"][0]["Value"] = true;
-            JsonDocument gdoc;
-            if (!deserializeJson(gdoc, gpayload, DeserializationOption::Filter(filter))) {
-                gpayload = "";
-                JsonArray gd = gdoc["data"]["graphData"].as<JsonArray>();
-                if (!gd.isNull() && gd.size() >= 1) {
-                    size_t n = gd.size();
-                    if (!hasSrcDelta && n >= 2) {
-                        float newest = gd[n - 1]["ValueInMgPerDl"] | gd[n - 1]["Value"] | 0.0f;
-                        float prev = gd[n - 2]["ValueInMgPerDl"] | gd[n - 2]["Value"] | 0.0f;
-                        if (newest > 0.0f && prev > 0.0f) {
-                            srcDeltaMmol = mgdl_to_mmol(newest) - mgdl_to_mmol(prev);
-                            hasSrcDelta = true;
-                        }
-                    }
-                    // graphData je oldest→newest; uložíme posledných N
-                    size_t start = (n > DIA_HISTORY_MAX) ? (n - DIA_HISTORY_MAX) : 0;
-                    float histAsc[DIA_HISTORY_MAX];
-                    int histN = 0;
-                    for (size_t i = start; i < n && histN < DIA_HISTORY_MAX; i++) {
-                        float v = gd[i]["ValueInMgPerDl"] | gd[i]["Value"] | 0.0f;
-                        if (v > 0.0f) histAsc[histN++] = mgdl_to_mmol(v);
-                    }
-                    if (histN > 0) {
-                        // SetNewestFirst očakáva newest-first → otočíme
-                        float histNf[DIA_HISTORY_MAX];
-                        for (int i = 0; i < histN; i++) histNf[i] = histAsc[histN - 1 - i];
-                        glucoseHistorySetNewestFirst(histNf, histN);
-                    }
-                }
-            }
-        }
+    // Graf je len krivka. Keď ešte čaká druhý človek, číslo už máme a graf ide po ňom.
+    if (s_holdLibreGraph) {
+        Serial.println("Libre graph: odklad, ide dalsi slot");
+    } else {
+        libreAppendGraph(&hasSrcDelta, &srcDeltaMmol);
     }
 
     applyGlucoseReading(mgdl_to_mmol(mgdl), getLibreTrendSymbol(trendArrow), ts,
@@ -463,6 +485,10 @@ void fetchLibre() {
 
     int r = libreFetchConnections();
     if (r == 1) return;
+    if (r == -2) {
+        markFetchError(FetchError::Empty);
+        return;
+    }
     if (r < 0) {
         // DNS/TLS blip – NEmazať token (to spôsobovalo falošný „Libre down“ v duali)
         markFetchError(FetchError::Network);
@@ -477,6 +503,10 @@ void fetchLibre() {
     }
     r = libreFetchConnections();
     if (r == 1) return;
+    if (r == -2) {
+        markFetchError(FetchError::Empty);
+        return;
+    }
     if (r < 0) {
         markFetchError(FetchError::Network);
         return;
@@ -524,42 +554,53 @@ static long parseDexcomWT(const char *wt) {
 
 static int dexcomPost(const String &endpoint, const String &body, String &outPayload) {
     String url = getDexcomBaseUrl(dexRegion) + endpoint;
-    WiFiClientSecure client;
-    configureTlsClient(client, tls_insecure);
-    HTTPClient http;
-    http.setTimeout(15000);
-    http.begin(client, url);
-    http.addHeader("Accept", "application/json");
-    http.addHeader("User-Agent", "Dexcom Share/3.0.2.11 CFNetwork/711.2.23 Darwin/14.0.0");
-    int httpCode;
-    if (body.length() == 0) {
-        http.addHeader("Content-Length", "0");
-        httpCode = http.POST((uint8_t *)"", 0);
-    } else {
-        http.addHeader("Content-Type", "application/json");
-        httpCode = http.POST(body);
+    outPayload = "";
+    int httpCode = -1;
+    // Dexcom podpisuje Google Trust Services, nie Let's Encrypt. Keď overenie spadne, druhý pokus bez neho.
+    for (int pass = 0; pass < 2; pass++) {
+        const bool insecure = (pass == 0) ? tls_insecure : true;
+        if (pass > 0) {
+            if (httpCode > 0 || tls_insecure) break;
+            Serial.println("Dexcom TLS zlyhal – retry setInsecure");
+            diaFetchBreathe(300);
+        }
+        WiFiClientSecure client;
+        configureTlsClient(client, insecure);
+        HTTPClient http;
+        http.setTimeout(15000);
+        if (!http.begin(client, url)) {
+            httpCode = -1;
+            continue;
+        }
+        http.addHeader("Accept", "application/json");
+        http.addHeader("User-Agent", "Dexcom Share/3.0.2.11 CFNetwork/711.2.23 Darwin/14.0.0");
+        if (body.length() == 0) {
+            http.addHeader("Content-Length", "0");
+            httpCode = http.POST((uint8_t *)"", 0);
+        } else {
+            http.addHeader("Content-Type", "application/json");
+            httpCode = http.POST(body);
+        }
+        if (httpCode > 0) outPayload = http.getString();
+        http.end();
+        if (httpCode > 0) break;
     }
-    outPayload = (httpCode > 0) ? http.getString() : "";
-    http.end();
     return httpCode;
-}
-
-static bool dexcomPostJson(const String &endpoint, const String &body, String &outPayload) {
-    return dexcomPost(endpoint, body, outPayload) == HTTP_CODE_OK;
 }
 
 // Max 2 úplné auth pokusy za beh NA SLOT (dual: A nesmie zablokovať B).
 static uint8_t s_dexAuthFails[DIA_PROFILE_COUNT] = {0, 0};
 static constexpr uint8_t kDexAuthMaxFails = 2;
 
-static bool dexcomLogin() {
-    if (dexUser.length() == 0 || dexPwd.length() == 0) return false;
+/** 1 = session, 0 = účet odmietnutý, -1 = sieť / TLS (nemaže pokusy). */
+static int dexcomLogin() {
+    if (dexUser.length() == 0 || dexPwd.length() == 0) return 0;
     int si = dia_active_slot;
     if (si < 0 || si >= DIA_PROFILE_COUNT) si = 0;
     if (s_dexAuthFails[si] >= kDexAuthMaxFails) {
         Serial.printf("Dexcom Auth: slot %d stop after %u fails (lockout guard)\n",
                       si, (unsigned)kDexAuthMaxFails);
-        return false;
+        return 0;
     }
 
     // Len region + read-only Publisher API – žiadny zápis / follower invite
@@ -575,11 +616,16 @@ static bool dexcomLogin() {
     serializeJson(authBody, authStr);
 
     String accountPayload;
-    if (!dexcomPostJson("General/AuthenticatePublisherAccount", authStr, accountPayload)) {
+    int code = dexcomPost("General/AuthenticatePublisherAccount", authStr, accountPayload);
+    if (code <= 0) {
+        Serial.printf("Dexcom Authenticate HTTP %d\n", code);
+        return -1;
+    }
+    if (code != HTTP_CODE_OK) {
         s_dexAuthFails[si]++;
-        Serial.printf("Dexcom Authenticate failed slot %d (attempt %u/%u)\n",
-                      si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
-        return false;
+        Serial.printf("Dexcom Authenticate HTTP %d slot %d (attempt %u/%u)\n",
+                      code, si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
+        return 0;
     }
 
     dexcom_account_id = stripJsonQuotes(accountPayload);
@@ -588,7 +634,7 @@ static bool dexcomLogin() {
         Serial.printf("Dexcom: neplatne account ID slot %d (attempt %u/%u)\n",
                       si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
         dexcom_account_id = "";
-        return false;
+        return 0;
     }
 
     JsonDocument loginBody;
@@ -599,11 +645,16 @@ static bool dexcomLogin() {
     serializeJson(loginBody, loginStr);
 
     String sessionPayload;
-    if (!dexcomPostJson("General/LoginPublisherAccountById", loginStr, sessionPayload)) {
+    code = dexcomPost("General/LoginPublisherAccountById", loginStr, sessionPayload);
+    if (code <= 0) {
+        Serial.printf("Dexcom LoginById HTTP %d\n", code);
+        return -1;
+    }
+    if (code != HTTP_CODE_OK) {
         s_dexAuthFails[si]++;
-        Serial.printf("Dexcom LoginById failed slot %d (attempt %u/%u)\n",
-                      si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
-        return false;
+        Serial.printf("Dexcom LoginById HTTP %d slot %d (attempt %u/%u)\n",
+                      code, si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
+        return 0;
     }
 
     dexcom_session_id = stripJsonQuotes(sessionPayload);
@@ -612,11 +663,11 @@ static bool dexcomLogin() {
         Serial.printf("Dexcom: neplatne session ID slot %d (attempt %u/%u)\n",
                       si, (unsigned)s_dexAuthFails[si], (unsigned)kDexAuthMaxFails);
         dexcom_session_id = "";
-        return false;
+        return 0;
     }
     s_dexAuthFails[si] = 0;
     Serial.println("Dexcom Auth OK (session)");
-    return true;
+    return 1;
 }
 
 enum class DexRead : uint8_t { Ok, NoData, SessionDead };
@@ -705,7 +756,13 @@ void fetchDexcom() {
     }
 
     if (dexcom_session_id.length() == 0) {
-        if (!dexcomLogin()) {
+        const int lr = dexcomLogin();
+        if (lr < 0) {
+            esp_rom_printf("[dex] Network: login\n");
+            markFetchError(FetchError::Network);
+            return;
+        }
+        if (lr == 0) {
             esp_rom_printf("[dex] Auth fail (login)\n");
             markFetchError(FetchError::Auth);
             return;
@@ -722,7 +779,13 @@ void fetchDexcom() {
     if (got == DexRead::SessionDead) {
         dexcom_session_id = "";
         dexcom_account_id = "";
-        if (!dexcomLogin()) {
+        const int lr = dexcomLogin();
+        if (lr < 0) {
+            esp_rom_printf("[dex] Network: relogin\n");
+            markFetchError(FetchError::Network);
+            return;
+        }
+        if (lr == 0) {
             esp_rom_printf("[dex] Auth fail (relogin)\n");
             markFetchError(FetchError::Auth);
             return;
@@ -738,6 +801,21 @@ void fetchDexcom() {
     markFetchError(got == DexRead::SessionDead ? FetchError::Auth : FetchError::Empty);
 }
 
+static bool nsLooksLikeSha1Hex(const String &s) {
+    if (s.length() != 40) return false;
+    for (size_t i = 0; i < s.length(); i++) {
+        if (!isxdigit((unsigned char)s[i])) return false;
+    }
+    return true;
+}
+
+static void nsSha1Hex(const String &input, char outHex[41]) {
+    unsigned char hash[20];
+    mbedtls_sha1((const unsigned char *)input.c_str(), input.length(), hash);
+    for (int i = 0; i < 20; i++) sprintf(outHex + (i * 2), "%02x", hash[i]);
+    outHex[40] = '\0';
+}
+
 void fetchNightscout() {
     if (nsUrl.length() == 0) {
         markFetchError(FetchError::Config);
@@ -751,29 +829,66 @@ void fetchNightscout() {
     const int histCount = DIA_HISTORY_MAX;
 
     String requestUrl = nsUrl;
-    if (requestUrl.endsWith("/")) requestUrl = requestUrl.substring(0, requestUrl.length() - 1);
+    requestUrl.trim();
+    while (requestUrl.endsWith("/") && requestUrl.length() > 8)
+        requestUrl.remove(requestUrl.length() - 1);
+    {
+        String lower = requestUrl;
+        lower.toLowerCase();
+        if (requestUrl.length() && !lower.startsWith("http://") && !lower.startsWith("https://"))
+            requestUrl = String("https://") + requestUrl;
+    }
     requestUrl += "/api/v1/entries.json?count=" + String(histCount);
+    // Overené: ?token= (access token aj moderný raw API_SECRET)
     if (nsToken.length() > 0) requestUrl += "&token=" + nsToken;
 
+    // Classic API_SECRET: rovnaká hodnota aj ako SHA1 v api-secret (NS akceptuje plain aj hash)
+    char apiSecretHdr[41] = "";
+    if (nsToken.length() > 0) {
+        if (nsLooksLikeSha1Hex(nsToken)) {
+            strncpy(apiSecretHdr, nsToken.c_str(), 40);
+            apiSecretHdr[40] = '\0';
+        } else {
+            nsSha1Hex(nsToken, apiSecretHdr);
+        }
+    }
+
     diaFetchLogHeap("ns-pre");
+    Serial.printf("NS GET url_len=%u secret_len=%u tls_insecure=%d\n",
+                  (unsigned)requestUrl.length(), (unsigned)nsToken.length(), (int)tls_insecure);
 
     int httpCode = -1;
     String payload;
-    for (int attempt = 0; attempt < 2; attempt++) {
-        if (diaFetchAborted()) break;
-        if (attempt > 0) diaFetchBreathe(400);
-        WiFiClientSecure client;
-        configureTlsClient(client, tls_insecure);
-        HTTPClient http;
-        http.setTimeout(10000);
-        http.begin(client, requestUrl);
-        httpCode = http.GET();
-        if (httpCode > 0) payload = http.getString();
-        http.end();
-        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
-            break;
-        Serial.printf("NS HTTP %d (pokus %d/2)\n", httpCode, attempt + 1);
+    // 0,1 = podľa tls_insecure; pri zlyhaní TLS ešte jeden pokus setInsecure (self-signed NS)
+    for (int pass = 0; pass < 2; pass++) {
+        const bool insecure = (pass == 0) ? tls_insecure : true;
+        if (pass > 0) {
+            if (httpCode > 0 || tls_insecure) break; // už sme insecure, alebo HTTP odpoveď prišla
+            Serial.println("NS TLS zlyhal – retry setInsecure");
+            diaFetchBreathe(400);
+        }
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (diaFetchAborted()) break;
+            if (attempt > 0) diaFetchBreathe(400);
+            WiFiClientSecure client;
+            configureTlsClient(client, insecure);
+            HTTPClient http;
+            http.setTimeout(12000);
+            if (!http.begin(client, requestUrl)) {
+                httpCode = -1;
+                continue;
+            }
+            if (apiSecretHdr[0]) http.addHeader("api-secret", apiSecretHdr);
+            httpCode = http.GET();
+            if (httpCode > 0) payload = http.getString();
+            http.end();
+            if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
+                break;
+            Serial.printf("NS HTTP %d (pass %d pokus %d/2)\n", httpCode, pass, attempt + 1);
+        }
+        if (httpCode > 0) break;
     }
+    Serial.printf("NS → HTTP %d payload_len=%u\n", httpCode, (unsigned)payload.length());
 
     if (httpCode > 0) {
         if (httpCode == HTTP_CODE_OK) {
@@ -879,10 +994,12 @@ void diaFetchWatchdog(uint32_t nowMs) {
     if (!s_fetchBusy) return;
     if (s_fetchStartedMs == 0) return;
     if ((uint32_t)(nowMs - s_fetchStartedMs) < 90000UL) return;
-    Serial.println("[fetch] WATCHDOG – busy >90s, abort dalsich slotov (bez ESP.restart)");
-    esp_rom_printf("[fetch] WATCHDOG >90s – prerus cyklus, task sam uvolni busy\n");
-    // Nemeniť busy/defer tu. Inak OTA a druhý fetch nabehnú popri stále bežiacom TLS.
+    if (s_fetchEpoch != s_fetchRunEpoch) return;
+    // Len tento slot. Druhý človek sa po návrate spojenia ešte spustí.
     s_fetchEpoch++;
+    diaDiagSlow(s_fetchSlot, (uint32_t)(nowMs - s_fetchStartedMs));
+    esp_rom_printf("[fetch] slot %d >90s – dalsi slot pokracuje, tento ide nabuduce posledny\n",
+                   s_fetchSlot);
 }
 
 static bool s_fetchGotReading = false;
@@ -903,6 +1020,13 @@ bool diaFetchSlotWaiting(int slot) {
     return s_slotWait[slot];
 }
 
+void diaFetchOnConfigChanged() {
+    s_fastNetRetries = 0;
+    s_slotWait[0] = false;
+    s_slotWait[1] = false;
+    s_showConnecting = false;
+}
+
 void diaFetchEnqueueSuccess(float mmol, const char *trend, long unix_ts,
                             bool hasSourceDelta, float sourceDeltaMmol) {
     s_fetchGotReading = true;
@@ -918,6 +1042,7 @@ void diaFetchEnqueueSuccess(float mmol, const char *trend, long unix_ts,
     }
     glucoseStoreReadingSlot(slot, mmol, trend ? String(trend) : String(""), ts,
                             hasSourceDelta, sourceDeltaMmol);
+    diaDiagResult(slot, (int)FetchError::None);
     Serial.printf("[fetch] slot %d OK mmol=%.2f ts=%ld (api_ts=%ld)\n",
                   slot, mmol, ts, unix_ts);
 
@@ -948,6 +1073,7 @@ void diaFetchEnqueueError(FetchError err) {
     }
     diaFetchSyncWaitFlag();
     const int slot = s_fetchSlot;
+    diaDiagResult(slot, (int)err);
     // Blip / prázdny JSON / krátky WiFi: nechaj poslednú hodnotu farebnú
     if ((err == FetchError::Network || err == FetchError::Empty || err == FetchError::Wifi) &&
         slotReadings[slot].has_valid_reading &&
@@ -1017,11 +1143,26 @@ static void diaFetchTask(void *param) {
                 order[orderN++] = slot;
             }
         }
+        if (orderN > 1) {
+            const int lead = diaDiagTakeLead();
+            if (lead >= 0 && !isNs(lead)) {
+                for (int i = 0; i < orderN; i++) {
+                    if (order[i] != lead) continue;
+                    const int v = order[i];
+                    for (int j = i; j > 0; --j) order[j] = order[j - 1];
+                    order[0] = v;
+                    break;
+                }
+            }
+        }
 
         bool retrySlot[DIA_PROFILE_COUNT] = {};
         auto runSlot = [&](int slot) {
             // Najprv s_fetchSlot – inak PushSlot(1) skipne (guard: slot != current)
             s_fetchSlot = slot;
+            s_fetchStartedMs = millis();
+            s_fetchRunEpoch = s_fetchEpoch;
+            diaDiagStep(slot, DiaDiagStep::Begin);
             diaConfigPushSlot(slot);
             Serial.printf("[fetch] slot %d src=%s url=%s\n", slot,
                           profiles[slot].dsSource.c_str(),
@@ -1041,7 +1182,8 @@ static void diaFetchTask(void *param) {
             fetchGlucoseData();
             // UI pri platnej (aj starej) hodnote chybu hneď zmaže. Snímka musí
             // vzniknúť tu, inak sa Emily z cache už neopakuje.
-            retrySlot[slot] = (slotReadings[slot].err == FetchError::Network ||
+            retrySlot[slot] = !diaFetchAborted() &&
+                              (slotReadings[slot].err == FetchError::Network ||
                                slotReadings[slot].err == FetchError::Empty);
             // História z JSON ostáva v globals – skopíruj do slotu pred poll
             {
@@ -1065,17 +1207,35 @@ static void diaFetchTask(void *param) {
         };
 
         for (int oi = 0; oi < orderN; oi++) {
-            if (diaFetchAborted()) {
-                Serial.println("[fetch] aborted (watchdog)");
-                break;
-            }
             const int slot = order[oi];
+            // Visí len tento slot. Po návrate ide ďalší, cyklus sa kvôli nemu nekončí.
+            s_holdLibreGraph = (oi + 1 < orderN);
             runSlot(slot);
+            s_holdLibreGraph = false;
             // Dual Guardian: dlhšia pauza – 2× ťažký TLS download za sebou
             const bool dualCl = orderN > 1 &&
                                 (profiles[slot].dsSource == "guardian" ||
                                  (oi + 1 < orderN && profiles[order[oi + 1]].dsSource == "guardian"));
             vTaskDelay(pdMS_TO_TICKS(dualCl ? 3000 : (orderN > 1 ? 1500 : 500)));
+        }
+
+        // Krivka Libre až keď má číslo aj druhý človek. Visí len graf, nie Guardian.
+        for (int oi = 0; oi + 1 < orderN; oi++) {
+            const int slot = order[oi];
+            if (!profiles[slot].dsSource.equalsIgnoreCase("libre")) continue;
+            if (slotReadings[slot].err != FetchError::None) continue;
+            s_fetchSlot = slot;
+            s_fetchStartedMs = millis();
+            s_fetchRunEpoch = s_fetchEpoch;
+            diaConfigPushSlot(slot);
+            glucoseHistoryClear();
+            libreAppendGraph(nullptr, nullptr);
+            if (glucose_history_count > 0) {
+                DiaSlotReading &sr = slotReadings[slot];
+                sr.history_count = glucose_history_count;
+                memcpy(sr.history, glucose_history, sizeof(sr.history));
+            }
+            diaConfigPullSessionsSlot(slot);
         }
 
         // Prvý slot často padne na studenom TLS / rozbitej PSRAM, druhý už prejde.

@@ -17,6 +17,8 @@ tools/ui_shot/build/
 firmware.bin
 bootloader.bin
 partitions.bin
+# Webový inštalátor na GitHub Pages. Ostatné binárky ostanú mimo gitu.
+!docs/install/**/*.bin
 *.elf
 *.map
 

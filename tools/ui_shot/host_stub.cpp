@@ -353,6 +353,7 @@ int diaProfileActiveCount() {
 bool diaFetchBusy() { return false; }
 bool diaFetchSlotWaiting(int) { return false; }
 bool diaFetchShowConnecting() { return false; }
+void diaFetchOnConfigChanged() {}
 bool diaFetchDeferUi() { return false; }
 int diaFetchCurrentSlot() { return 0; }
 void diaFetchEnqueueSuccess(float, const char *, long, bool, float) {}
@@ -387,6 +388,8 @@ void diaAudioResetChimeTimer() {}
 void diaOtaNoteBoot() {}
 void check_firmware_update(bool) {}
 int diaOtaServerVersion() { return 0; }
+int diaOtaKnownVersion() { return 0; }
+void diaDiagResult(int, int) {}
 void update_progress_cb(int, int) {}
 
 void saveConfigCallback() {}

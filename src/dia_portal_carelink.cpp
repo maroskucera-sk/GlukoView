@@ -4,6 +4,7 @@
 #include "dia_config.h"
 #include "dia_fetch.h"
 #include "dia_i18n.h"
+#include "dia_portal_assets.h"
 #include "dia_ui.h"
 
 #include <WebServer.h>
@@ -31,21 +32,26 @@ static void handleCarelinkPage() {
     page += F(
         "<!DOCTYPE html><html><head><meta charset=UTF-8>"
         "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-        "<title>CareLink</title><style>"
+        "<title>CareLink</title>");
+    diaPortalAppendFaviconLink(page);
+    page += F(
+        "<style>"
         "body{font-family:system-ui,Verdana,sans-serif;margin:14px;background:#0b0f14;color:#eee;line-height:1.45}"
         "h1{font-size:1.35rem;margin:0 0 8px}h2{font-size:1.05rem;margin:18px 0 8px;color:#8cf}"
+        ".gv-logo{text-align:center;margin:4px 0 12px}.gv-logo img{max-width:min(180px,70vw);height:auto}"
         ".box{background:#151c26;padding:14px;border-radius:10px;margin:12px 0}"
         ".ok{color:#6d6}.warn{color:#fc6}.err{color:#f66}"
         "ol{padding-left:1.2rem}li{margin:8px 0}"
-        "button,.btn{display:block;width:100%;padding:14px;background:#1fa3ec;color:#fff;border:0;"
-        "border-radius:10px;font-size:16px;margin-top:10px;text-align:center;text-decoration:none;box-sizing:border-box}"
-        "button.sec{background:#2a3544}select,textarea{width:100%;box-sizing:border-box;margin-top:6px;"
-        "padding:10px;border-radius:8px;border:1px solid #334;background:#0e141c;color:#eee;font-size:15px}"
+        "button,.btn{display:block;width:100%;min-height:52px;padding:16px;background:#1fa3ec;color:#fff!important;border:0;"
+        "border-radius:12px;font-size:17px;font-weight:600;margin-top:10px;text-align:center;text-decoration:none;box-sizing:border-box}"
+        "button.sec,.btn-sec{background:#243040}.btn-cl{background:linear-gradient(135deg,#7c5cff,#5a3fd4)}"
+        "select,textarea{width:100%;box-sizing:border-box;margin-top:6px;"
+        "padding:12px;border-radius:10px;border:1px solid #334;background:#0e141c;color:#eee;font-size:16px}"
         "textarea{min-height:90px}a{color:#8cf}.muted{color:#99a;font-size:0.92rem}"
-        "label.pat{display:block;padding:10px;margin:6px 0;background:#0e141c;border-radius:8px;border:1px solid #334}"
-        "</style></head><body>"
-        "<div style=\"font-size:20px;font-weight:700\">Gluko<span style=color:#1fa3ec>View</span></div>"
-        "<h1>");
+        "label.pat{display:block;padding:14px;margin:8px 0;background:#0e141c;border-radius:10px;border:1px solid #334}"
+        "</style></head><body>");
+    diaPortalAppendLogoHtml(page);
+    page += F("<h1>");
     page += S(Str::ClTitle);
     page += F("</h1>");
     if (ready) {
@@ -146,11 +152,14 @@ static void handleCarelinkPage() {
     page += F("</label><textarea name=cb placeholder=\"com.medtronic.carepartner:/sso?code=...\"></textarea>"
               "<button type=submit>");
     page += S(Str::ClBtnFinish);
-    page += F("</button></form></div><p><a href=/param>");
-    page += S(Str::ClBackParam);
-    page += F("</a> · <a href=/>");
-    page += S(Str::ClMenu);
-    page += F("</a></p></body></html>");
+    page += F("</button></form></div>"
+              "<a class=\"btn btn-sec\" href=/>");
+    page += S(Str::ClHome);
+    page += F("</a><a class=\"btn btn-sec\" href=/param?all=1>");
+    page += S(Str::PortalBtnParams);
+    page += F("</a>");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
     wm.server->send(200, "text/html; charset=utf-8", page);
 }
 
@@ -170,7 +179,9 @@ static void handleCarelinkPatient() {
         page += S(Str::ClNoPatient);
         page += F("</p><p><a href=/carelink>");
         page += S(Str::Back);
-        page += F("</a></p></body></html>");
+        page += F("</a></p>");
+        diaPortalAppendLegalNote(page);
+        page += F("</body></html>");
         wm.server->send(200, "text/html; charset=utf-8", page);
         return;
     }
@@ -214,13 +225,18 @@ static void handleCarelinkPatient() {
     page += (slot == 1) ? F("B") : F("A");
     page += F("): <b>");
     page += profiles[slot].name;
-    page += F("</b></p><p><a href=/carelink?slot=");
+    page += F("</b></p>"
+              "<a class=btn href=/carelink?slot=");
     page += String(slot);
     page += F(">");
     page += S(Str::ClBackCarelink);
-    page += F("</a> · <a href=/param>");
-    page += S(Str::ClParams);
-    page += F("</a></p></body></html>");
+    page += F("</a><a class=\"btn\" style=background:#243040 href=/>");
+    page += S(Str::ClHome);
+    page += F("</a><a class=\"btn\" style=background:#243040 href=/param?all=1>");
+    page += S(Str::PortalBtnParams);
+    page += F("</a>");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
     wm.server->send(200, "text/html; charset=utf-8", page);
 }
 
@@ -239,7 +255,9 @@ static void handleCarelinkStart() {
         page += err;
         page += F("</p><p><a href=/carelink>");
         page += S(Str::Back);
-        page += F("</a></p></body></html>");
+        page += F("</a></p>");
+        diaPortalAppendLegalNote(page);
+        page += F("</body></html>");
         wm.server->send(200, "text/html; charset=utf-8", page);
         return;
     }
@@ -277,7 +295,9 @@ static void handleCarelinkStart() {
     page += S(Str::ClBtnFinish);
     page += F("</button></form></div><p><a href=/carelink>");
     page += S(Str::Back);
-    page += F("</a></p></body></html>");
+    page += F("</a></p>");
+    diaPortalAppendLegalNote(page);
+    page += F("</body></html>");
     wm.server->send(200, "text/html; charset=utf-8", page);
 }
 
@@ -308,22 +328,23 @@ static void handleCarelinkFinish() {
         page += F("<p class=ok>");
         page += S(Str::ClDoneTokens);
         page += (tokSlot == 1) ? F("B") : F("A");
-        page += F(".</p><p><a class=btn href=/carelink?slot=");
+        page += F(".</p><a class=btn href=/carelink?slot=");
         page += String(tokSlot);
         page += F(">");
         page += S(Str::ClPickPatientBtn);
-        page += F("</a></p><p><a href=/>");
+        page += F("</a><a class=btn style=background:#243040 href=/>");
         page += S(Str::ClHome);
-        page += F("</a> · <a href=/param>");
-        page += S(Str::ClParams);
-        page += F("</a></p>");
+        page += F("</a><a class=btn style=background:#243040 href=/param?all=1>");
+        page += S(Str::PortalBtnParams);
+        page += F("</a>");
     } else {
         page += F("<p class=err>");
         page += err;
-        page += F("</p><p><a href=/carelink>");
+        page += F("</p><a class=btn href=/carelink>");
         page += S(Str::ClRetry);
-        page += F("</a></p>");
+        page += F("</a>");
     }
+    diaPortalAppendLegalNote(page);
     page += F("</body></html>");
     wm.server->send(200, "text/html; charset=utf-8", page);
 }

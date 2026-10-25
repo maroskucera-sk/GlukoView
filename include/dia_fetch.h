@@ -28,3 +28,5 @@ int diaFetchCurrentSlot();
 bool diaFetchShowConnecting();
 /** Slot čaká na server aj po rýchlych pokusoch. Číslo na displeji ostáva. */
 bool diaFetchSlotWaiting(int slot);
+/** Po uložení zdroja v portáli: zruš „Pripájam…“ a dovoľ hneď nový fetch. */
+void diaFetchOnConfigChanged();

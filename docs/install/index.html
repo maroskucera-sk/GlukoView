@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GlukoView – nahratie firmvéru</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font: 16px/1.45 "Segoe UI", sans-serif; background: #0e141b; color: #e8eef4; }
+    main { max-width: 44rem; margin: 0 auto; padding: 1.5rem 1.1rem 3rem; }
+    h1 { font-size: 1.7rem; margin: 0 0 .4rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 .35rem; }
+    p, li { margin: .35rem 0; }
+    .en { color: #9aabba; }
+    a { color: #8fd0ff; }
+    .card { background: #17202a; border: 1px solid #2a3a4a; border-radius: 12px; padding: .9rem 1rem; margin: .8rem 0; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+    button { width: 100%; margin-top: .7rem; border: 0; border-radius: 10px; padding: .75rem .8rem; font: 600 16px/1.2 "Segoe UI", sans-serif; background: #1f8fdb; color: #fff; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    label.erase { display: flex; gap: .6rem; align-items: flex-start; background: #241c14; border-radius: 10px; padding: .75rem .85rem; }
+    label.erase input { width: 1.15rem; height: 1.15rem; margin-top: .15rem; flex: none; }
+    #status { min-height: 1.4em; font-weight: 650; }
+    progress { width: 100%; height: .7rem; }
+    pre { white-space: pre-wrap; word-break: break-word; max-height: 9rem; overflow: auto; background: #0b1016; color: #b7c4d0; border-radius: 8px; padding: .6rem .7rem; font-size: 12px; }
+    .legal { color: #8b98a5; font-size: 13px; }
+    @media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>GlukoView</h1>
+    <p>Pripoj dosku káblom k počítaču a nahraj firmvér. Visual Studio, PlatformIO ani Python netreba.</p>
+    <p class="en">Plug the board into a computer and flash the firmware. Visual Studio, PlatformIO and Python are not required.</p>
+
+    <div class="card">
+      <ul>
+        <li>Chrome alebo Edge na počítači. Firefox, Safari a telefón nie.</li>
+        <li>Solo je kruh. V zozname portov je prevodník CH343. Keď port nie je, nainštaluj <a href="https://www.wch-ic.com/downloads/CH343SER_EXE.html">ovládač CH343</a>.</li>
+        <li>Duo je široký displej. Keď sa nahrávanie nechytí, podrž BOOT, stlač RESET, pusti BOOT a skús znova.</li>
+        <li class="en">Chrome or Edge on a computer. Not Firefox, Safari or a phone.</li>
+        <li class="en">Solo is the round display (CH343). Install the <a href="https://www.wch-ic.com/downloads/CH343SER_EXE.html">CH343 driver</a> if the port is missing.</li>
+        <li class="en">Duo is the wide display. If flashing does not start, hold BOOT, press RESET, release BOOT and try again.</li>
+      </ul>
+    </div>
+
+    <label class="erase">
+      <input id="erase" type="checkbox">
+      <span>
+        Vymazať WiFi, súhlas a účet. Nechaj vypnuté, ak doska už beží a len ju opravuješ. Zapni to len pri novej doske alebo keď sa má začať od nuly.
+        <span class="en">Erase Wi-Fi, the acknowledgement and the account. Leave this off to keep a working setup. Turn it on only for a new board or a full restart.</span>
+      </span>
+    </label>
+
+    <div class="row">
+      <section class="card">
+        <h2>Solo</h2>
+        <p>Kruhový displej, jeden človek. Verzia <span id="ver-solo">…</span>.</p>
+        <p class="en">Round display, one person. Version <span id="ver-solo-en">…</span>.</p>
+        <button id="btn-solo" type="button">Nahrať Solo</button>
+      </section>
+      <section class="card">
+        <h2>Duo</h2>
+        <p>Široký displej, jeden až dvaja ľudia, zvuk. Verzia <span id="ver-duo">…</span>.</p>
+        <p class="en">Wide display, one or two people, sound. Version <span id="ver-duo-en">…</span>.</p>
+        <button id="btn-duo" type="button">Nahrať Duo</button>
+      </section>
+    </div>
+
+    <p id="status" role="status"></p>
+    <progress id="bar" max="100" value="0" hidden></progress>
+    <pre id="log" hidden></pre>
+
+    <p class="legal">Projekt GlukoView je nezávislý open-source softvér. Nie je zdravotnícka pomôcka a nie je schválený spoločnosťami Abbott, Dexcom ani Medtronic. Ochranné známky patria ich vlastníkom. Nahrávanie beží len v tomto prehliadači, firmvér sa nikam neposiela.</p>
+    <p class="legal en">GlukoView is independent open-source software. It is not a medical device and it is not approved by Abbott, Dexcom or Medtronic. Trademarks belong to their owners. Flashing stays in this browser. The firmware is not uploaded anywhere.</p>
+    <p class="legal">esptool-js 0.5.7 (Apache-2.0), spark-md5 3.0.2 (MIT).</p>
+  </main>
+  <script src="vendor/spark-md5.min.js"></script>
+  <script type="module" src="install.js"></script>
+</body>
+</html>

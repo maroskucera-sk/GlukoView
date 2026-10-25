@@ -4,9 +4,11 @@
 #include "dia_audio.h"
 #include "dia_carelink.h"
 #include "dia_config.h"
+#include "dia_diag.h"
 #include "dia_fetch.h"
 #include "dia_glucose.h"
 #include "dia_i18n.h"
+#include "dia_legal.h"
 #include "dia_modules.h"
 #include "dia_ota.h"
 #include "dia_ui.h"
@@ -18,6 +20,7 @@ void setup() {
 
     diaConfigBegin();
     diaConfigLoad();
+    diaDiagBoot();
     diaOtaNoteBoot();
 
     if (preferences.isKey("cache_mmol")) {
@@ -58,6 +61,10 @@ void setup() {
     if (diaI18nNeedsSetup()) {
         diaUiRunLanguageSetup();
     }
+    // Logo ostane 2,2 s ako predtým. Veta o liečbe ide až po ňom.
+    diaUiHoldSplash();
+    // Až po jazyku. Kým nie je súhlas, fetch ani CareLink sa nespúšťajú.
+    diaUiRunLegalConsent();
 
     showBootStatus("WiFi", S(Str::BootConnecting));
     diaUiFlushHandlers(4, 5);
@@ -69,6 +76,7 @@ void setup() {
 }
 
 void loop() {
+    diaWifiPollBootLegal();
     diaWifiProcess();
     diaWifiSavePortalConfigIfNeeded();
     diaUiProcessPendingPrefSave();
@@ -119,12 +127,20 @@ void loop() {
     }
 
     {
+        static bool ota_night_hold = false;
         unsigned long otaDue = ota_first_check_done ? otaCheckInterval : otaFirstCheckDelay;
+        if (ota_night_hold) otaDue = otaNightRetry;
         if (auto_update && (currentMillis - last_ota_check > otaDue)) {
             last_ota_check = currentMillis;
-            ota_first_check_done = true;
-            if (!is_critical && last_mmol_value > 0.0 && !diaFetchBusy()) {
-                check_firmware_update(false);
+            if (!diaOtaInDayWindow()) {
+                ota_night_hold = true;
+                esp_rom_printf("[OTA] mimo denného okna, bez sťahovania\n");
+            } else {
+                ota_night_hold = false;
+                ota_first_check_done = true;
+                if (!is_critical && last_mmol_value > 0.0 && !diaFetchBusy()) {
+                    check_firmware_update(false);
+                }
             }
         }
     }
