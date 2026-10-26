@@ -1,6 +1,6 @@
 # GlukoView
 
-🌍 *[Read in English](#english-version) | 🇸🇰 [Čítať po slovensky](#slovenská-verzia)*
+🌍 *[Read in English](#-english-version) | 🇸🇰 [Čítať po slovensky](#-slovenská-verzia)*
 
 ---
 
@@ -18,6 +18,7 @@ The user interface is fully localized. The default language is Slovak, but Engli
 ### Supported Data Sources
 GlukoView can fetch data from multiple platforms. Please note that these integrations are **not official public APIs** (manufacturers may change them at any time) and their use is entirely at your own risk.
 *   **Nightscout**
+*   **Gluroo** uses the same Nightscout setting. It is not a separate source in the firmware. In the Gluroo app open Connections → DIY / Nightscout and copy the base URL (`https://something.ns.gluroo.com`) and the API Secret Token. Paste the base URL only, without `/api/v1` and without `?token=`. Gluroo allows about 5,000 requests per account per day; one display asks about once a minute. That token can also write data, so treat it like a password.
 *   **Libre LinkUp**
 *   **Dexcom Share**
 *   **Guardian (CareLink)**
@@ -101,6 +102,7 @@ Používateľské rozhranie je plne lokalizované – základom je slovenčina, 
 ### Podporované zdroje dát
 GlukoView dokáže sťahovať dáta z viacerých platforiem. Tieto integrácie **nie sú oficiálnymi verejnými API** daných služieb (výrobcovia ich môžu kedykoľvek zmeniť) a ich použitie je výhradne na vlastné riziko.
 *   **Nightscout**
+*   **Gluroo** ide cez to isté nastavenie Nightscout. Vo firmvéri to nie je samostatný zdroj. V aplikácii Gluroo otvor Connections → DIY / Nightscout a skopíruj základnú adresu (`https://nieco.ns.gluroo.com`) a API Secret Token. Do poľa adresy patrí len tá základná adresa, bez `/api/v1` a bez `?token=`. Gluroo povoľuje asi 5 000 požiadaviek na účet za deň; jeden displej sa pýta zhruba raz za minútu. Token vie údaje aj zapisovať, preto sa s ním zaobchádza ako s heslom.
 *   **Libre LinkUp**
 *   **Dexcom Share**
 *   **Guardian (CareLink)**
