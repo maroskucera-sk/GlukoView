@@ -857,45 +857,52 @@ void showBootStatus(const char *title, const char *detail) {
     lv_obj_align(label_age, steps ? LV_ALIGN_TOP_LEFT : LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_clear_flag(label_age, LV_OBJ_FLAG_CLICKABLE);
     // Návod po súhlase aj po WiFi, kým chýba senzor. Veta by zakryla ďalší krok.
-    if (diaBoardIsRound()) {
-        if (guide) {
+    const bool round = diaBoardIsRound();
+    if (guide) {
+        if (round) {
             lv_obj_set_size(ui_boot_scroll, 184, hasTitle ? 156 : 188);
             lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 48 : 26);
         } else {
-            lv_obj_set_size(ui_boot_scroll, 200, 62);
-            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, 168);
+            lv_obj_set_size(ui_boot_scroll, 440, hasTitle ? 210 : 250);
+            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 78 : 28);
         }
-    } else if (guide) {
-        lv_obj_set_size(ui_boot_scroll, 440, hasTitle ? 210 : 250);
-        lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 78 : 28);
-    } else {
-        lv_obj_set_size(ui_boot_scroll, 440, 120);
-        lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, 168);
     }
     lv_obj_scroll_to_y(ui_boot_scroll, 0, LV_ANIM_OFF);
 
     if (!lbl_boot_legal) {
-        lbl_boot_legal = lv_label_create(lv_scr_act());
+        lbl_boot_legal = lv_label_create(ui_boot_scroll);
         lv_obj_set_style_text_font(lbl_boot_legal, &font_sk_16, LV_PART_MAIN);
         lv_obj_set_style_text_color(lbl_boot_legal, lv_color_hex(0xE6EEF6), LV_PART_MAIN);
         lv_label_set_long_mode(lbl_boot_legal, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_align(lbl_boot_legal, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_line_space(lbl_boot_legal, 2, LV_PART_MAIN);
+        lv_obj_set_height(lbl_boot_legal, LV_SIZE_CONTENT);
         lv_obj_clear_flag(lbl_boot_legal, LV_OBJ_FLAG_CLICKABLE);
     }
+    lv_obj_set_parent(lbl_boot_legal, ui_boot_scroll);
     if (guide) {
         lv_obj_add_flag(lbl_boot_legal, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_pad_bottom(ui_boot_scroll, 2, LV_PART_MAIN);
     } else {
+        // Veta a „Skenujem siete...“ sú v jednom posuve. Medzera ich oddelí,
+        // a keď sa na kruh nezmestia, text sa dá posunúť, nič sa neodreže.
+        const int boxW = round ? (hasTitle ? 176 : 180) : 440;
+        const int gap = round ? 22 : 28;
+        lv_obj_set_width(label_age, boxW - 8);
+        lv_obj_set_width(lbl_boot_legal, boxW - 8);
         lv_label_set_text(lbl_boot_legal, S(Str::LegalBoot));
-        if (diaBoardIsRound()) {
-            lv_obj_set_width(lbl_boot_legal, 200);
-            lv_obj_align(lbl_boot_legal, LV_ALIGN_TOP_MID, 0, 40);
-        } else {
-            lv_obj_set_width(lbl_boot_legal, 440);
-            lv_obj_align(lbl_boot_legal, LV_ALIGN_TOP_MID, 0, 72);
-        }
+        lv_obj_align(lbl_boot_legal, LV_ALIGN_TOP_MID, 0, 4);
         lv_obj_clear_flag(lbl_boot_legal, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(lbl_boot_legal);
+        lv_obj_update_layout(lbl_boot_legal);
+        lv_obj_align_to(label_age, lbl_boot_legal, LV_ALIGN_OUT_BOTTOM_MID, 0, gap);
+        lv_obj_set_style_pad_bottom(ui_boot_scroll, 14, LV_PART_MAIN);
+        if (round) {
+            lv_obj_set_size(ui_boot_scroll, boxW, hasTitle ? 168 : 190);
+            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 52 : 26);
+        } else {
+            lv_obj_set_size(ui_boot_scroll, boxW, hasTitle ? 210 : 248);
+            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 72 : 32);
+        }
     }
     if (s_bootLegalFrom == 0) s_bootLegalFrom = millis();
 
