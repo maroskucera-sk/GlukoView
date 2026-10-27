@@ -225,7 +225,7 @@ enum class Str : uint16_t {
     /** Info: rozpísané vedomie, že zariadenie nie je na liečbu. */
     LegalInfoStored,
     LegalInfoMissing,
-    /** Každý štart, kým nie je ciferník: nie pomôcka, nie na inzulín, nie na liečbu. */
+    /** Každý štart, kým nie je ciferník: nie je zdravotnícka pomôcka. */
     LegalBoot,
     /** Info: krátky stav, ktorý svieti nad rozpísaným vedomím. */
     LegalInfoOk,
