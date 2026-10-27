@@ -1,4 +1,4 @@
-import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js?v=2";
+import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js?v=3";
 
 const BOARDS = {
   solo: { vid: 0x1a86, pid: 0x55d3, name: "Solo" },
@@ -25,8 +25,15 @@ function log(line) {
 }
 
 function md5hex(bytes) {
-  const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  return SparkMD5.ArrayBuffer.hash(copy);
+  let buffer;
+  if (typeof bytes === "string") {
+    const out = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) out[i] = bytes.charCodeAt(i) & 255;
+    buffer = out.buffer;
+  } else {
+    buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  return SparkMD5.ArrayBuffer.hash(buffer);
 }
 
 function setBusy(on) {
@@ -151,6 +158,7 @@ async function flash(boardKey) {
         ? " Pri Duo podrž BOOT, stlač RESET a pusti BOOT. / On Duo, hold BOOT, press RESET, release BOOT."
         : " Pri Solo skontroluj kábel a ovládač CH343. / On Solo, check the cable and the CH343 driver.";
       say(message + hint);
+      log(message);
     }
     if (transport) {
       try { await transport.disconnect(); } catch { /* port už môže byť zatvorený */ }
