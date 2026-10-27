@@ -224,6 +224,8 @@ static bool s_bootUiLock = true;
 /** Scrollovací AP návod (dlhý text na kruhu / 3.5"). */
 static lv_obj_t *ui_boot_scroll = nullptr;
 static lv_obj_t *lbl_boot_legal = nullptr;
+static char s_bootShownTitle[64];
+static char s_bootShownDetail[512];
 static uint32_t s_bootLegalFrom = 0;
 static constexpr uint32_t kBootLegalHoldMs = 5000;
 
@@ -758,8 +760,28 @@ static void clearMainOverlays() {
     }
 }
 
+static bool bootStatusSame(const char *title, const char *detail) {
+    const char *t = title ? title : "";
+    const char *d = detail ? detail : "";
+    return strncmp(s_bootShownTitle, t, sizeof(s_bootShownTitle) - 1) == 0 &&
+           strncmp(s_bootShownDetail, d, sizeof(s_bootShownDetail) - 1) == 0;
+}
+
+static void bootStatusRemember(const char *title, const char *detail) {
+    const char *t = title ? title : "";
+    const char *d = detail ? detail : "";
+    strncpy(s_bootShownTitle, t, sizeof(s_bootShownTitle) - 1);
+    s_bootShownTitle[sizeof(s_bootShownTitle) - 1] = '\0';
+    strncpy(s_bootShownDetail, d, sizeof(s_bootShownDetail) - 1);
+    s_bootShownDetail[sizeof(s_bootShownDetail) - 1] = '\0';
+}
+
 void showBootStatus(const char *title, const char *detail) {
     s_bootUiLock = true;
+    // AP callback volá to isté ešte raz uprostred štartu rádia. Druhé kreslenie
+    // zhodí posun na začiatok a na chvíľu zamrzne dotyk.
+    if (ui_boot_scroll && bootStatusSame(title, detail)) return;
+    bootStatusRemember(title, detail);
     // Logo inak zostane nad textom: počas blokujúceho WiFi nebeží loop → timer 2.2 s sa nespustí
     diaUiHideSplash();
     clearMainOverlays();
@@ -825,9 +847,10 @@ void showBootStatus(const char *title, const char *detail) {
         lv_obj_set_style_border_width(ui_boot_scroll, 0, LV_PART_MAIN);
         lv_obj_set_style_pad_all(ui_boot_scroll, 2, LV_PART_MAIN);
         lv_obj_set_scroll_dir(ui_boot_scroll, LV_DIR_VER);
-        lv_obj_set_scrollbar_mode(ui_boot_scroll, LV_SCROLLBAR_MODE_AUTO);
         lv_obj_add_flag(ui_boot_scroll, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(ui_boot_scroll, LV_OBJ_FLAG_SCROLL_ELASTIC);
+        lv_obj_set_scrollbar_mode(ui_boot_scroll, LV_SCROLLBAR_MODE_OFF);
+        // Dojazd by na tomto displeji dobiehal aj počas štartu WiFi a pôsobil ako zaseknutie.
+        diaUiMakeScrollSnappy(ui_boot_scroll);
         // Inak dlhé podržanie skončí v návode a menu na obrazovke sa neotvorí.
         lv_obj_add_flag(ui_boot_scroll, LV_OBJ_FLAG_EVENT_BUBBLE);
     }
@@ -867,8 +890,6 @@ void showBootStatus(const char *title, const char *detail) {
             lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 78 : 28);
         }
     }
-    lv_obj_scroll_to_y(ui_boot_scroll, 0, LV_ANIM_OFF);
-
     if (!lbl_boot_legal) {
         lbl_boot_legal = lv_label_create(ui_boot_scroll);
         lv_obj_set_style_text_font(lbl_boot_legal, &font_sk_16, LV_PART_MAIN);
@@ -879,7 +900,7 @@ void showBootStatus(const char *title, const char *detail) {
         lv_obj_set_height(lbl_boot_legal, LV_SIZE_CONTENT);
         lv_obj_clear_flag(lbl_boot_legal, LV_OBJ_FLAG_CLICKABLE);
     }
-    lv_obj_set_parent(lbl_boot_legal, ui_boot_scroll);
+    lv_obj_set_parent(lbl_boot_legal, guide ? lv_scr_act() : ui_boot_scroll);
     if (guide) {
         lv_obj_add_flag(lbl_boot_legal, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_pad_bottom(ui_boot_scroll, 2, LV_PART_MAIN);
@@ -904,13 +925,12 @@ void showBootStatus(const char *title, const char *detail) {
             lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 72 : 32);
         }
     }
+    lv_obj_scroll_to_y(ui_boot_scroll, 0, LV_ANIM_OFF);
     if (s_bootLegalFrom == 0) s_bootLegalFrom = millis();
 
     lv_obj_invalidate(lv_scr_act());
-    // 3.5B full_refresh = celý QSPI blit; 25× by vizuálne „zamrzlo“ na Ukladám…
-    const int frames = diaBoardPreferFullRefresh() ? 3 : 25;
-    const int delayMs = diaBoardPreferFullRefresh() ? 30 : 8;
-    diaUiFlushHandlers(frames, delayMs);
+    // Jedno prekreslenie stačí. Viac snímok tu len drží dotyk, kým sa spúšťa WiFi.
+    diaUiFlushHandlers(diaBoardPreferFullRefresh() ? 2 : 3, diaBoardPreferFullRefresh() ? 20 : 5);
 }
 
 bool diaUiBootLegalHolding() {
@@ -920,6 +940,8 @@ bool diaUiBootLegalHolding() {
 
 void restoreMainScreenChrome() {
     s_bootUiLock = false;
+    s_bootShownTitle[0] = '\0';
+    s_bootShownDetail[0] = '\0';
     diaUiMarkReady();
     if (lbl_boot_legal) lv_obj_add_flag(lbl_boot_legal, LV_OBJ_FLAG_HIDDEN);
     if (ui_boot_scroll) {
