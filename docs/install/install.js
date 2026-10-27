@@ -1,4 +1,4 @@
-import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js";
+import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js?v=2";
 
 const BOARDS = {
   solo: { vid: 0x1a86, pid: 0x55d3, name: "Solo" },
@@ -95,6 +95,9 @@ async function flash(boardKey) {
     const loader = new ESPLoader({
       transport,
       baudrate: 115200,
+      romBaudrate: 115200,
+      // Predvolených 255 B na CH343 pretečie hneď po štarte stubu a zápis sa už nepohne.
+      serialOptions: { bufferSize: 131072 },
       terminal: {
         clean() {},
         writeLine(line) { log(line); },
@@ -110,6 +113,9 @@ async function flash(boardKey) {
       say("Mažem uložené nastavenia. / Erasing saved settings.");
       await loader.eraseFlash();
     }
+    say("Pripravujem zápis. Prehliadač môže chvíľu nereagovať. / Preparing the write. The browser may pause briefly.");
+    log("Stub beží, začínam zápis. / Stub is running, starting the write.");
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     say("Nahrávam. Neodpájaj kábel. / Flashing. Do not unplug.");
     await loader.writeFlash({
       fileArray: parts,
