@@ -1,4 +1,4 @@
-import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js?v=4";
+import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js?v=5";
 
 const BOARDS = {
   solo: { vid: 0x1a86, pid: 0x55d3, name: "Solo" },
@@ -141,7 +141,10 @@ async function flash(boardKey) {
     wrote = true;
     barEl.value = 100;
     say("Reštartujem dosku. / Restarting the board.");
-    await loader.after();
+    await Promise.race([
+      loader.after(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("reset-timeout")), 4000)),
+    ]);
     transport = null;
     say(eraseEl.checked
       ? "Hotovo. Nastavenia sú zmazané, po štarte znova WiFi a súhlas. / Done. Settings were erased."
