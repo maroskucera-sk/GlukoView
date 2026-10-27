@@ -45,11 +45,11 @@ function setBusy(on) {
 }
 
 async function loadParts(boardKey) {
-  const manifestUrl = new URL(`${boardKey}/manifest.json`, import.meta.url);
+  const manifestUrl = new URL(`${boardKey}/manifest.json?v=6`, import.meta.url);
   const manifest = await (await fetch(manifestUrl)).json();
   const parts = [];
   for (const part of manifest.builds[0].parts) {
-    const response = await fetch(new URL(part.path, manifestUrl));
+    const response = await fetch(new URL(`${part.path}?v=6`, manifestUrl));
     if (!response.ok) throw new Error(`Chýba súbor ${part.path}. / Missing ${part.path}.`);
     parts.push({
       data: new Uint8Array(await response.arrayBuffer()),
@@ -62,7 +62,7 @@ async function loadParts(boardKey) {
 async function showVersions() {
   for (const key of ["solo", "duo"]) {
     try {
-      const manifest = await (await fetch(`${key}/manifest.json`)).json();
+      const manifest = await (await fetch(`${key}/manifest.json?v=6`)).json();
       document.getElementById(`ver-${key}`).textContent = manifest.version;
       document.getElementById(`ver-${key}-en`).textContent = manifest.version;
     } catch {

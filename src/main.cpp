@@ -58,13 +58,14 @@ void setup() {
         }
     }
 
-    if (diaI18nNeedsSetup()) {
-        diaUiRunLanguageSetup();
-    }
+    if (diaI18nNeedsSetup()) diaUiRunLanguageSetup(false);
     // Logo ostane 2,2 s ako predtým. Veta o liečbe ide až po ňom.
     diaUiHoldSplash();
     // Až po jazyku. Kým nie je súhlas, fetch ani CareLink sa nespúšťajú.
-    diaUiRunLegalConsent();
+    // Zo súhlasu sa dá vrátiť na jazyk, kým ho používateľ nepotvrdí.
+    while (!diaUiRunLegalConsent()) {
+        diaUiRunLanguageSetup(true);
+    }
 
     showBootStatus("WiFi", S(Str::BootConnecting));
     diaUiFlushHandlers(4, 5);

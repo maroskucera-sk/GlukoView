@@ -3381,17 +3381,44 @@ void build_ui() {
 }
 
 static volatile int s_lang_pick = -1;
+static volatile bool s_lang_ok = false;
+static lv_obj_t *s_langBtns[8];
+static lv_obj_t *s_langOkBtn = nullptr;
+static int s_langBtnN = 0;
+
+static void langPaintSelection() {
+    for (int i = 0; i < s_langBtnN; i++) {
+        if (!s_langBtns[i]) continue;
+        lv_obj_set_style_bg_color(s_langBtns[i],
+                                  lv_color_hex(i == s_lang_pick ? 0x1FA3EC : 0x1A3040), LV_PART_MAIN);
+    }
+    if (!s_langOkBtn) return;
+    if (s_lang_pick >= 0) lv_obj_clear_state(s_langOkBtn, LV_STATE_DISABLED);
+    else lv_obj_add_state(s_langOkBtn, LV_STATE_DISABLED);
+}
 
 static void lang_pick_cb(lv_event_t *e) {
     s_lang_pick = (int)(intptr_t)lv_event_get_user_data(e);
+    langPaintSelection();
 }
 
-bool diaUiRunLanguageSetup() {
-    if (!diaI18nNeedsSetup()) return false;
-    s_lang_pick = -1;
+static void lang_ok_cb(lv_event_t *e) {
+    (void)e;
+    if (s_lang_pick < 0) return;
+    if (s_langOkBtn && lv_obj_has_state(s_langOkBtn, LV_STATE_DISABLED)) return;
+    s_lang_ok = true;
+}
+
+bool diaUiRunLanguageSetup(bool force) {
+    if (!force && !diaI18nNeedsSetup()) return false;
+    s_lang_pick = (!diaI18nNeedsSetup()) ? (int)diaI18nGet() : -1;
+    s_lang_ok = false;
+    s_langOkBtn = nullptr;
+    s_langBtnN = 0;
     s_bootUiLock = true;
     diaUiHideSplash();
 
+    const bool round = diaBoardIsRound();
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(overlay, screenWidth, screenHeight);
     lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), LV_PART_MAIN);
@@ -3406,34 +3433,51 @@ bool diaUiRunLanguageSetup() {
     lv_obj_t *title = lv_label_create(overlay);
     lv_label_set_text(title, "Language / Jazyk");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_text_font(title, diaBoardIsRound() ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+    lv_obj_set_style_text_font(title, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
     lv_obj_clear_flag(title, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, diaBoardIsRound() ? 14 : 8);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, round ? 10 : 8);
 
     const int n = diaI18nCount();
-    const int btnH = diaBoardIsRound() ? 26 : 36;
-    const int gap = diaBoardIsRound() ? 2 : 4;
-    const int startY = diaBoardIsRound() ? 36 : 40;
-    for (int i = 0; i < n; i++) {
+    const int btnH = round ? 22 : 32;
+    const int gap = round ? 2 : 4;
+    const int startY = round ? 30 : 40;
+    for (int i = 0; i < n && i < 8; i++) {
         lv_obj_t *btn = lv_btn_create(overlay);
-        lv_obj_set_size(btn, diaBoardIsRound() ? 180 : (screenWidth - 40), btnH);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1a3040), LV_PART_MAIN);
+        s_langBtns[i] = btn;
+        s_langBtnN = i + 1;
+        lv_obj_set_size(btn, round ? 168 : (screenWidth - 80), btnH);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A3040), LV_PART_MAIN);
         lv_obj_set_style_radius(btn, 8, LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, startY + i * (btnH + gap));
-        // SHORT_CLICKED ako v menu; label nesmie prebrať touch
         lv_obj_add_event_cb(btn, lang_pick_cb, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn);
         lv_label_set_text(lbl, diaI18nNativeNameAt(i));
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-        lv_obj_set_style_text_font(lbl, diaBoardIsRound() ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+        lv_obj_set_style_text_font(lbl, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
         lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_center(lbl);
     }
 
-    // Bez lv_tick_inc LVGL nevie detegovať click (press/release timing)
+    s_langOkBtn = lv_btn_create(overlay);
+    lv_obj_set_size(s_langOkBtn, round ? 120 : 200, round ? 28 : 40);
+    lv_obj_align(s_langOkBtn, LV_ALIGN_TOP_MID, 0, round ? 186 : 268);
+    lv_obj_set_style_bg_color(s_langOkBtn, lv_color_hex(0x005588), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_langOkBtn, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DISABLED);
+    lv_obj_set_style_radius(s_langOkBtn, 8, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s_langOkBtn, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(s_langOkBtn, lang_ok_cb, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_t *okLbl = lv_label_create(s_langOkBtn);
+    lv_label_set_text(okLbl, "OK");
+    lv_obj_set_style_text_font(okLbl, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+    lv_obj_set_style_text_color(okLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_center(okLbl);
+    lv_obj_clear_flag(okLbl, LV_OBJ_FLAG_CLICKABLE);
+    langPaintSelection();
+
     uint32_t lastTick = millis();
-    while (s_lang_pick < 0) {
+    while (!s_lang_ok) {
         uint32_t now = millis();
         lv_tick_inc(now - lastTick);
         lastTick = now;
@@ -3443,6 +3487,8 @@ bool diaUiRunLanguageSetup() {
 
     diaI18nSet((DiaLang)s_lang_pick);
     diaI18nMarkSetupDone();
+    s_langOkBtn = nullptr;
+    s_langBtnN = 0;
     lv_obj_del(overlay);
     s_bootUiLock = false;
     diaUiApplyLanguage();
@@ -3453,6 +3499,12 @@ static lv_obj_t *s_legalGo = nullptr;
 static lv_obj_t *s_legalBox = nullptr;
 static bool s_legalChecked = false;
 static volatile bool s_legalAcceptedClick = false;
+static volatile bool s_legalWantLang = false;
+
+static void legal_lang_cb(lv_event_t *e) {
+    (void)e;
+    s_legalWantLang = true;
+}
 
 static void legalApplyCheckVisual() {
     if (s_legalBox) {
@@ -3476,10 +3528,11 @@ static void legal_go_cb(lv_event_t *e) {
     s_legalAcceptedClick = true;
 }
 
-void diaUiRunLegalConsent() {
-    if (diaLegalAccepted()) return;
+bool diaUiRunLegalConsent() {
+    if (diaLegalAccepted()) return true;
     s_legalChecked = false;
     s_legalAcceptedClick = false;
+    s_legalWantLang = false;
     s_legalGo = nullptr;
     s_legalBox = nullptr;
     s_bootUiLock = true;
@@ -3507,7 +3560,7 @@ void diaUiRunLegalConsent() {
 
     // Kruh: text je v posuvnom poli, aby sa dlhší preklad neorezal.
     lv_obj_t *sc = lv_obj_create(overlay);
-    lv_obj_set_size(sc, round ? 196 : (screenWidth - 48), round ? 112 : 130);
+    lv_obj_set_size(sc, round ? 196 : (screenWidth - 48), round ? 100 : 130);
     lv_obj_align(sc, LV_ALIGN_TOP_MID, 0, round ? 32 : 52);
     lv_obj_set_style_bg_opa(sc, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(sc, 0, LV_PART_MAIN);
@@ -3541,8 +3594,8 @@ void diaUiRunLegalConsent() {
     lv_obj_clear_flag(indep, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *row = lv_btn_create(overlay);
-    lv_obj_set_size(row, round ? 190 : 400, round ? 40 : 48);
-    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, round ? 150 : 196);
+    lv_obj_set_size(row, round ? 180 : 400, round ? 34 : 48);
+    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, round ? 136 : 196);
     lv_obj_set_style_bg_color(row, lv_color_hex(0x1A3040), LV_PART_MAIN);
     lv_obj_set_style_radius(row, 8, LV_PART_MAIN);
     lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
@@ -3568,8 +3621,8 @@ void diaUiRunLegalConsent() {
     lv_obj_clear_flag(checkLbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_legalGo = lv_btn_create(overlay);
-    lv_obj_set_size(s_legalGo, round ? 140 : 240, round ? 34 : 48);
-    lv_obj_align(s_legalGo, LV_ALIGN_TOP_MID, 0, round ? 196 : 252);
+    lv_obj_set_size(s_legalGo, round ? 140 : 200, round ? 28 : 48);
+    lv_obj_align(s_legalGo, LV_ALIGN_TOP_MID, round ? 0 : 110, round ? 204 : 252);
     lv_obj_set_style_bg_color(s_legalGo, lv_color_hex(0x005588), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_legalGo, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DISABLED);
     lv_obj_set_style_radius(s_legalGo, 8, LV_PART_MAIN);
@@ -3584,14 +3637,35 @@ void diaUiRunLegalConsent() {
     lv_obj_center(goLbl);
     lv_obj_clear_flag(goLbl, LV_OBJ_FLAG_CLICKABLE);
 
+    lv_obj_t *langBtn = lv_btn_create(overlay);
+    lv_obj_set_size(langBtn, round ? 150 : 140, round ? 26 : 48);
+    lv_obj_align(langBtn, LV_ALIGN_TOP_MID, round ? 0 : -150, round ? 174 : 252);
+    lv_obj_set_style_bg_color(langBtn, lv_color_hex(0x243040), LV_PART_MAIN);
+    lv_obj_set_style_radius(langBtn, 8, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(langBtn, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(langBtn, legal_lang_cb, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_t *langLbl = lv_label_create(langBtn);
+    lv_label_set_text(langLbl, "Jazyk");
+    lv_obj_set_style_text_font(langLbl, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+    lv_obj_set_style_text_color(langLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_center(langLbl);
+    lv_obj_clear_flag(langLbl, LV_OBJ_FLAG_CLICKABLE);
+
     uint32_t lastTick = millis();
     for (;;) {
-        while (!s_legalAcceptedClick) {
+        while (!s_legalAcceptedClick && !s_legalWantLang) {
             uint32_t now = millis();
             lv_tick_inc(now - lastTick);
             lastTick = now;
             lv_timer_handler();
             delay(5);
+        }
+        if (s_legalWantLang) {
+            s_legalGo = nullptr;
+            s_legalBox = nullptr;
+            lv_obj_del(overlay);
+            s_bootUiLock = false;
+            return false;
         }
         if (diaLegalAccept()) break;
         s_legalAcceptedClick = false;
@@ -3601,6 +3675,7 @@ void diaUiRunLegalConsent() {
     s_legalBox = nullptr;
     lv_obj_del(overlay);
     s_bootUiLock = false;
+    return true;
 }
 
 static void diaUiApplyLanguage() {

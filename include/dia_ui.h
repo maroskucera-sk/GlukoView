@@ -39,10 +39,10 @@ void diaUiFlushHandlers(int frames, int delayMs);
 void diaUiOpenSettings();
 void diaUiApplyDisplayMode();
 void diaUiUpdateSlotFace(int slot);
-/** First-boot LVGL language picker; blocking until a language is chosen. */
-bool diaUiRunLanguageSetup();
-/** Po jazyku: súhlas, že displej nie je na liečebné rozhodnutia. No-op, ak už je v NVS. */
-void diaUiRunLegalConsent();
+/** First-boot výber jazyka. force znova otvorí zoznam, aj keď jazyk už je uložený. */
+bool diaUiRunLanguageSetup(bool force = false);
+/** true = súhlas uložený. false = používateľ sa chce vrátiť na výber jazyka. */
+bool diaUiRunLegalConsent();
 /** true, kým od prvého boot textu neubehlo 5 s. Len drží ciferník, fetch nespomaľuje. */
 bool diaUiBootLegalHolding();
 
