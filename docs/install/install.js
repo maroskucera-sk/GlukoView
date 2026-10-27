@@ -1,4 +1,4 @@
-import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js?v=3";
+import { ESPLoader, Transport } from "./vendor/esptool-js-0.5.7.js?v=4";
 
 const BOARDS = {
   solo: { vid: 0x1a86, pid: 0x55d3, name: "Solo" },
