@@ -36,6 +36,38 @@ function md5hex(bytes) {
   return SparkMD5.ArrayBuffer.hash(buffer);
 }
 
+function raceMs(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("reset-timeout")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+// CH343 drží DTR a RTS v jednom príkaze. Samostatné setRTS z knižnice pulz hneď zmaže
+// a displej ostane v stubu. EN dole, GPIO0 hore, potom obe pustiť.
+async function restartSolo(transport) {
+  const port = transport.device;
+  if (transport.reader) {
+    try { await raceMs(transport.reader.cancel(), 800); } catch { /* čítanie už mohlo skončiť */ }
+    try { transport.reader.releaseLock(); } catch { /* zámok už nie je náš */ }
+    transport.reader = undefined;
+  }
+  await port.setSignals({ dataTerminalReady: false, requestToSend: true });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  try { await raceMs(port.close(), 1500); } catch { /* port sa zatvorí odpojením */ }
+}
+
 function setBusy(on) {
   busy = on;
   buttons.forEach((button) => {
@@ -140,15 +172,25 @@ async function flash(boardKey) {
     });
     wrote = true;
     barEl.value = 100;
-    say("Reštartujem dosku. / Restarting the board.");
-    await Promise.race([
-      loader.after(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("reset-timeout")), 4000)),
-    ]);
+    log("Zápis overený. / Write verified.");
+    say("Zápis overený, púšťam dosku. / Write verified, releasing the board.");
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    let restartFailed = false;
+    try {
+      if (boardKey === "solo") await raceMs(restartSolo(transport), 5000);
+      else await raceMs(loader.after(), 5000);
+    } catch {
+      restartFailed = true;
+    }
     transport = null;
-    say(eraseEl.checked
+    const done = eraseEl.checked
       ? "Hotovo. Nastavenia sú zmazané, po štarte znova WiFi a súhlas. / Done. Settings were erased."
-      : "Hotovo. WiFi a účet ostali. / Done. Wi-Fi and the account were kept.");
+      : "Hotovo. WiFi a účet ostali. / Done. Wi-Fi and the account were kept.";
+    log(done);
+    if (restartFailed) {
+      log("Ak displej ostane čierny, odpoj kábel na 3 sekundy. / If the screen stays black, unplug the cable for 3 seconds.");
+    }
+    say(done);
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
     if (/No port selected|cancel/i.test(message)) {
