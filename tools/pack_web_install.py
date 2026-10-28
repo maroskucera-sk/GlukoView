@@ -48,6 +48,28 @@ def require(data: bytes, needle: str, label: str, present: bool) -> None:
         raise SystemExit(f"{label}: {state} {needle}")
 
 
+def qio_bootloader(image: bytes) -> bytes:
+    """Octal PSRAM na Duo potrebuje QIO v hlavičke. Súbor z buildu je DIO a USB nahrávanie ho prepíše."""
+    data = bytearray(image)
+    if len(data) < 24 or data[0] != 0xE9 or data[23] != 1:
+        raise SystemExit("duo bootloader nie je obraz, ktorý viem prepnúť na QIO")
+    segments = data[1]
+    off = 24
+    for _ in range(segments):
+        if off + 8 > len(data):
+            raise SystemExit("duo bootloader má poškodený segment")
+        size = int.from_bytes(data[off + 4 : off + 8], "little")
+        off += 8 + size
+    end = off + (15 - (off % 16)) + 1
+    if end + 32 > len(data):
+        raise SystemExit("duo bootloader nemá miesto na kontrolný súčet")
+    data[2] = 0
+    data[3] = 0x4F
+    digest = hashlib.sha256(data[:end]).digest()
+    data[end : end + 32] = digest
+    return bytes(data)
+
+
 def main() -> None:
     version = firmware_version()
     app0 = boot_app0()
@@ -61,6 +83,8 @@ def main() -> None:
         require(firmware, tag, key, True)
         require(firmware, other, key, False)
         require(firmware, "Abbott", key, True)
+        if key == "duo":
+            bootloader = qio_bootloader(bootloader)
         if len(firmware) < 500_000 or len(bootloader) < 1_000 or len(partitions) < 64:
             raise SystemExit(f"{key}: podozrivá veľkosť súborov")
         dest = out_root / key

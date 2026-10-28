@@ -68,6 +68,64 @@ async function restartSolo(transport) {
   try { await raceMs(port.close(), 1500); } catch { /* port sa zatvorí odpojením */ }
 }
 
+// Široká doska ide cez vstavané USB-JTAG, nie cez CH343. Knižničné after()
+// volá len RTS a na Windows dosku nechá v nahrávaní, takže svieti len podsvietenie.
+// Obe linky idú v jednom príkaze a prechod ide cez (1,1), nie cez (0,0).
+async function restartDuo(transport) {
+  const port = transport.device;
+  if (transport.reader) {
+    try { await raceMs(transport.reader.cancel(), 800); } catch { /* čítanie už mohlo skončiť */ }
+    try { transport.reader.releaseLock(); } catch { /* zámok už nie je náš */ }
+    transport.reader = undefined;
+  }
+  const both = (dtr, rts) => port.setSignals({ dataTerminalReady: dtr, requestToSend: rts });
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  await both(false, false);
+  await wait(100);
+  await both(true, false);
+  await wait(100);
+  await both(true, true);
+  await wait(20);
+  await both(false, true);
+  await wait(100);
+  await both(false, false);
+  await wait(200);
+  try { await raceMs(port.close(), 1500); } catch { /* port sa zatvorí odpojením */ }
+}
+
+// Široká doska má osmičkovú PSRAM. Bootloader v súbore je označený ako DIO
+// a esptool.js ho neprepíše. ROM ho potom nenačíta v QIO a obraz ostane čierny.
+// Rovnakú úpravu aj so súčtom robí USB nahrávanie. Solo (štvorcová PSRAM) ostáva.
+function espImageSignedLength(bytes) {
+  if (bytes.length < 24 || bytes[0] !== 0xe9) return 0;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let off = 24;
+  for (let i = 0; i < bytes[1]; i++) {
+    if (off + 8 > bytes.length) return 0;
+    const size = view.getUint32(off + 4, true);
+    off += 8 + size;
+    if (off > bytes.length) return 0;
+  }
+  return off + (15 - (off % 16)) + 1;
+}
+
+async function patchDuoBootloader(parts) {
+  for (const part of parts) {
+    if (part.address !== 0 || !part.data || part.data[0] !== 0xe9 || part.data[23] !== 1) continue;
+    const copy = new Uint8Array(part.data);
+    const length = espImageSignedLength(copy);
+    if (!length || length + 32 > copy.length) {
+      throw new Error("Bootloader pre Duo sa nedá upraviť. / The Duo bootloader could not be prepared.");
+    }
+    copy[2] = 0;
+    copy[3] = 0x4f;
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", copy.subarray(0, length)));
+    copy.set(digest, length);
+    part.data = copy;
+    log("Bootloader Duo je QIO. / Duo bootloader set to QIO.");
+  }
+}
+
 function setBusy(on) {
   busy = on;
   buttons.forEach((button) => {
@@ -77,11 +135,11 @@ function setBusy(on) {
 }
 
 async function loadParts(boardKey) {
-  const manifestUrl = new URL(`${boardKey}/manifest.json?v=10`, import.meta.url);
+  const manifestUrl = new URL(`${boardKey}/manifest.json?v=11`, import.meta.url);
   const manifest = await (await fetch(manifestUrl)).json();
   const parts = [];
   for (const part of manifest.builds[0].parts) {
-    const response = await fetch(new URL(`${part.path}?v=10`, manifestUrl));
+    const response = await fetch(new URL(`${part.path}?v=11`, manifestUrl));
     if (!response.ok) throw new Error(`Chýba súbor ${part.path}. / Missing ${part.path}.`);
     parts.push({
       data: new Uint8Array(await response.arrayBuffer()),
@@ -94,7 +152,7 @@ async function loadParts(boardKey) {
 async function showVersions() {
   for (const key of ["solo", "duo"]) {
     try {
-      const manifest = await (await fetch(`${key}/manifest.json?v=10`)).json();
+      const manifest = await (await fetch(`${key}/manifest.json?v=11`)).json();
       document.getElementById(`ver-${key}`).textContent = manifest.version;
       document.getElementById(`ver-${key}-en`).textContent = manifest.version;
     } catch {
@@ -155,11 +213,12 @@ async function flash(boardKey) {
     say("Pripravujem zápis. Prehliadač môže chvíľu nereagovať. / Preparing the write. The browser may pause briefly.");
     log("Stub beží, začínam zápis. / Stub is running, starting the write.");
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (boardKey === "duo") await patchDuoBootloader(parts);
     say("Nahrávam. Neodpájaj kábel. / Flashing. Do not unplug.");
     await loader.writeFlash({
       fileArray: parts,
       flashSize: "16MB",
-      flashMode: "dio",
+      flashMode: boardKey === "duo" ? "qio" : "dio",
       flashFreq: "80m",
       eraseAll: false,
       compress: true,
@@ -178,7 +237,7 @@ async function flash(boardKey) {
     let restartFailed = false;
     try {
       if (boardKey === "solo") await raceMs(restartSolo(transport), 5000);
-      else await raceMs(loader.after(), 5000);
+      else await raceMs(restartDuo(transport), 5000);
     } catch {
       restartFailed = true;
     }
@@ -187,8 +246,9 @@ async function flash(boardKey) {
       ? "Hotovo. Nastavenia sú zmazané, po štarte znova WiFi a súhlas. / Done. Settings were erased."
       : "Hotovo. WiFi a účet ostali. / Done. Wi-Fi and the account were kept.";
     log(done);
+    log("Ak ostane len čierne podsvietenie, odpoj kábel na 3 sekundy. / If only the black backlight stays on, unplug the cable for 3 seconds.");
     if (restartFailed) {
-      log("Ak displej ostane čierny, odpoj kábel na 3 sekundy. / If the screen stays black, unplug the cable for 3 seconds.");
+      log("Reštart z prehliadača sa nepodaril, po odpojení sa program spustí sám. / The browser restart failed. The program starts after you unplug.");
     }
     say(done);
   } catch (error) {
