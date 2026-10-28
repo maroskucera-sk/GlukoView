@@ -171,6 +171,45 @@ void loadGlucoseCache() {
     current_arc_color = calculate_dynamic_color(last_mmol_value);
 }
 
+DiaPumpStatus slotPump[2];
+
+void diaPumpClear(int slot) {
+    if (slot < 0 || slot > 1) return;
+    slotPump[slot] = DiaPumpStatus();
+}
+
+void diaPumpFormat(int slot, char *buf, size_t n, bool compact) {
+    if (!buf || n == 0) return;
+    buf[0] = '\0';
+    if (slot < 0 || slot > 1 || !slotPump[slot].valid) return;
+    const DiaPumpStatus &p = slotPump[slot];
+    size_t used = 0;
+    auto add = [&](const char *fmt, float a, const char *sep) {
+        if (used + 4 >= n) return;
+        if (sep && used > 0) {
+            int k = snprintf(buf + used, n - used, "%s", sep);
+            if (k < 0 || (size_t)k >= n - used) return;
+            used += (size_t)k;
+        }
+        int k = snprintf(buf + used, n - used, fmt, a);
+        if (k < 0 || (size_t)k >= n - used) {
+            buf[used] = '\0';
+            return;
+        }
+        used += (size_t)k;
+    };
+    if (compact) {
+        if (p.hasIob) add("IOB %.1f", p.iob, nullptr);
+        if (p.hasCob) add("COB %.0f", p.cob, "  ");
+        if (p.hasBasal) add("%.2f U/h", p.basal, "  ");
+        return;
+    }
+    if (p.hasIob) add("IOB %.1f U", p.iob, nullptr);
+    if (p.hasCob) add("COB %.0f g", p.cob, "\n");
+    if (p.hasBasal) add("%.2f U/h", p.basal, "\n");
+    if (p.hasReservoir) add("%.0f U", p.reservoir, p.hasBasal ? " · " : "\n");
+}
+
 const char *fetchErrorText(FetchError err) {
     switch (err) {
         case FetchError::Wifi:

@@ -109,14 +109,18 @@ void diaBoardFlushPresent();
 void diaBoardPresentLand(const uint16_t *land);
 /** true = prst dole; x/y v LVGL súradniciach (DIA_SCREEN_W/H). */
 bool diaBoardTouchRead(int16_t *x, int16_t *y);
+/** true = touch čip odpovedá na I2C (inak použi BOOT na setup). */
+bool diaBoardTouchOk();
 bool diaBoardIsRound();
 const char *diaBoardName();
 /** Preferovať LVGL full_refresh (1.28 nie; 3.5B áno – AXS partial window nefunguje). */
 bool diaBoardPreferFullRefresh();
 /** true = landscape soft-rotate (3.5B). */
 bool diaBoardIsLandscape();
-/** true = ES8311 + speaker (3.5B). */
+/** true = ES8311 + speaker (3.5 / 3.5B). */
 bool diaBoardHasAudio();
+/** I2S MCLK: 3.5 ST7796 = GPIO12, 3.5B AXS = GPIO44 (CS na 12). */
+int diaBoardI2sMclkPin();
 /** PA enable cez TCA EXIO7 (NS4150B CTRL, active high). no-op bez audio. */
 void diaBoardSpeakerAmp(bool enable);
 

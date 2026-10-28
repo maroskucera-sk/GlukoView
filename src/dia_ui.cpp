@@ -15,15 +15,20 @@
 
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <esp_rom_sys.h>
 #include <math.h>
 #include <time.h>
 
+LV_FONT_DECLARE(font_sk_12);
 LV_FONT_DECLARE(font_sk_16);
 LV_FONT_DECLARE(font_sk_20);
 LV_FONT_DECLARE(font_sk_24);
+LV_FONT_DECLARE(font_sk_28);
+LV_FONT_DECLARE(font_sk_32);
 LV_FONT_DECLARE(font_sk_48);
 LV_FONT_DECLARE(font_sk_72);
 LV_FONT_DECLARE(font_sk_88);
+LV_FONT_DECLARE(font_pump_56);
 LV_IMG_DECLARE(logo_boot);
 
 static const uint32_t screenWidth = DIA_SCREEN_W;
@@ -51,6 +56,16 @@ static lv_obj_t *label_trend1 = nullptr;
 static lv_obj_t *label_delta1 = nullptr;
 static lv_obj_t *label_age1 = nullptr;
 static lv_obj_t *label_source1 = nullptr;
+static lv_obj_t *label_pump = nullptr;
+/** Pump ciferník (NS): Sach / IOB kruhy + stredný BG kruh. */
+static lv_obj_t *arc_pump_cob = nullptr;
+static lv_obj_t *arc_pump_iob = nullptr;
+static lv_obj_t *arc_pump_bg = nullptr;
+static lv_obj_t *label_pump_cob = nullptr;
+static lv_obj_t *label_pump_iob = nullptr;
+/** Hodnoty v satelitoch (väčší font než nápis Sach/IOB). */
+static lv_obj_t *label_pump_cob_val = nullptr;
+static lv_obj_t *label_pump_iob_val = nullptr;
 static lv_obj_t *split_line = nullptr;
 static lv_obj_t *panel_frame0 = nullptr;
 static lv_obj_t *panel_frame1 = nullptr;
@@ -153,6 +168,7 @@ lv_obj_t *lbl_btn_autoupdate;
 lv_obj_t *lbl_btn_units;
 lv_obj_t *lbl_btn_delta;
 lv_obj_t *lbl_btn_source = nullptr;
+lv_obj_t *lbl_btn_pump = nullptr;
 lv_obj_t *lbl_btn_glow = nullptr;
 lv_obj_t *lbl_btn_orient = nullptr;
 lv_obj_t *lbl_btn_sound = nullptr;
@@ -252,7 +268,7 @@ static void diaUiFacePassThroughTouches() {
     // Labely/grafy inak „zožerú“ tap – long-press/dvojklik ide len na lv_scr_act()
     lv_obj_t *objs[] = {
         label_time, label_glycemia, label_trend, label_delta, label_age, label_status,
-        label_source, label_name0, label_name1, label_glycemia1, label_trend1, label_delta1,
+        label_source, label_pump, label_name0, label_name1, label_glycemia1, label_trend1, label_delta1,
         label_age1, label_source1, arc_bg, chart_spark, chart_spark1, split_line,
         panel_frame0, panel_frame1,
     };
@@ -327,6 +343,10 @@ static void my_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_col
         }
     }
     lv_disp_flush_ready(disp_drv);
+#if defined(DIA_BOARD_WS_3_5)
+    // Medzi pásmi nech WDT/I2C dýcha – sync SPI inak drží loop desiatky ms
+    yield();
+#endif
 }
 
 static void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
@@ -345,12 +365,13 @@ static void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data
 
 void diaUiInitHardware() {
     diaBoardInit(); // BL zostáva 0 – zapne sa až po logu (diaUiRevealDisplay)
-    Serial.printf("[ui] board=%s %ux%u face=%d\n",
-                  diaBoardName(), (unsigned)screenWidth, (unsigned)screenHeight, DIA_FACE_SIZE);
+    esp_rom_printf("[ui] board=%s %ux%u face=%d\n",
+                   diaBoardName(), (unsigned)screenWidth, (unsigned)screenHeight, DIA_FACE_SIZE);
 }
 
 void diaUiRevealDisplay() {
     diaBoardSetBrightness((uint8_t)day_brightness);
+    esp_rom_printf("[ui] BL on br=%d\n", day_brightness);
 }
 
 void diaUiInitLvgl() {
@@ -362,13 +383,15 @@ void diaUiInitLvgl() {
     if (full) {
         buf_px = screenWidth * screenHeight;
     } else {
-        // Landscape: viac riadkov = menej flushov pri scrolle menu
-        buf_px = screenWidth * (land ? 60 : 40);
+        // ST7796: kratšie pásy v internom RAM = menej lag pri kliku (PSRAM SPI blokuje loop)
+        buf_px = screenWidth * (land ? 40 : 40);
     }
 
     size_t nbytes = sizeof(lv_color_t) * buf_px;
-    // Landscape buffery radšej do PSRAM (480×60×2 je väčšie)
-    uint32_t caps = MALLOC_CAP_8BIT | ((full || land) ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL);
+    // Full frame (AXS) → PSRAM. Partial (ST7796) → internal/DMA kvôli rýchlosti touch UI.
+    uint32_t caps = MALLOC_CAP_8BIT |
+                    (full ? MALLOC_CAP_SPIRAM
+                          : (land ? (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) : MALLOC_CAP_INTERNAL));
 
     disp_draw_buf = (lv_color_t *)heap_caps_malloc(nbytes, caps);
     if (!disp_draw_buf) disp_draw_buf = (lv_color_t *)heap_caps_malloc(nbytes, MALLOC_CAP_8BIT);
@@ -376,12 +399,12 @@ void diaUiInitLvgl() {
     if (!disp_draw_buf2) disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(nbytes, MALLOC_CAP_8BIT);
 
     if (!disp_draw_buf) {
-        Serial.println("[ui] LVGL draw buf alloc FAILED");
+        esp_rom_printf("[ui] LVGL draw buf alloc FAILED\n");
     } else {
-        Serial.printf("[ui] LVGL buf px=%u full=%d buf2=%d free_int=%u free_psram=%u\n",
-                      (unsigned)buf_px, (int)full, (int)(disp_draw_buf2 != nullptr),
-                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        esp_rom_printf("[ui] LVGL buf px=%u full=%d buf2=%d free_int=%u free_psram=%u\n",
+                       (unsigned)buf_px, (int)full, (int)(disp_draw_buf2 != nullptr),
+                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     }
     lv_disp_draw_buf_init(&draw_buf, disp_draw_buf, disp_draw_buf2, buf_px);
 
@@ -399,9 +422,9 @@ void diaUiInitLvgl() {
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = my_touchpad_read;
 #if defined(DIA_BOARD_WS_3_5)
-    // Soft-rotate je ťažší – skorší štart scrollu, ale throw necháme (flick = ďalšia stránka)
-    indev_drv.scroll_limit = 6;
-    indev_drv.scroll_throw = 8;
+    // Kompromis: dosť na tap (neukradnúť do swipe), málo na krátky flick stránky
+    indev_drv.scroll_limit = 18;
+    indev_drv.scroll_throw = 10;
 #else
     indev_drv.scroll_limit = 15;
 #endif
@@ -422,7 +445,11 @@ static void diaUiMakeTileviewSwipeFriendly(lv_obj_t *obj) {
     if (!obj) return;
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_add_flag(obj, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+#if defined(DIA_BOARD_WS_3_5)
+    lv_obj_set_style_anim_time(obj, 120, 0);
+#else
     lv_obj_set_style_anim_time(obj, 160, 0);
+#endif
 }
 
 /** Sivíť len Auth/Config; Wifi/Network/Empty pri platných dátach nesiví (blip). */
@@ -551,6 +578,10 @@ static void diaUiPlaceSingleName() {
         lv_obj_add_flag(label_name0, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    if (watchface_style == 3) {
+        lv_obj_add_flag(label_name0, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
     const bool show = !diaUiIsSplitMode() && diaProfileConfigured(0) && diaProfileConfigured(1);
     if (!show) {
         lv_obj_add_flag(label_name0, LV_OBJ_FLAG_HIDDEN);
@@ -573,10 +604,12 @@ static void diaUiPlaceSingleName() {
 #endif
 }
 
-/** Dual: 0 = čísla, 1 = grafy. Mapované na watchface_style 0 / 2 (ako single). */
+/** Dual: 0 = čísla, 1 = grafy, 2 = pumpa (len NS + show_pump). */
 static int diaUiSplitPage() {
 #if defined(DIA_BOARD_WS_3_5)
-    return (watchface_style == 2) ? 1 : 0;
+    if (watchface_style == 2) return 1;
+    if (watchface_style == 3 && show_pump && diaAnyNightscout()) return 2;
+    return 0;
 #else
     return 0;
 #endif
@@ -599,16 +632,366 @@ static void place_top(lv_obj_t *obj, int x, int y) {
     lv_obj_align(obj, LV_ALIGN_TOP_MID, x, y + DIA_FACE_OFFSET_Y);
 }
 
+/** Single ciferník: stránky 0..2 (+ 3 = pumpa len pri NS a show_pump). */
+static int diaUiFacePageCount() {
+    return (show_pump && diaAnyNightscout()) ? 4 : 3;
+}
+
+static bool diaUiProfileIsNs(int slot) {
+    if (slot < 0 || slot > 1) return false;
+    const String &s = profiles[slot].dsSource;
+    return s == "nightscout" || s == "ns";
+}
+
+static void diaUiHidePumpExtras() {
+    if (arc_pump_cob) lv_obj_add_flag(arc_pump_cob, LV_OBJ_FLAG_HIDDEN);
+    if (arc_pump_iob) lv_obj_add_flag(arc_pump_iob, LV_OBJ_FLAG_HIDDEN);
+    if (arc_pump_bg) lv_obj_add_flag(arc_pump_bg, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump_cob) lv_obj_add_flag(label_pump_cob, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump_iob) lv_obj_add_flag(label_pump_iob, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump_cob_val) lv_obj_add_flag(label_pump_cob_val, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump_iob_val) lv_obj_add_flag(label_pump_iob_val, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump) lv_obj_add_flag(label_pump, LV_OBJ_FLAG_HIDDEN);
+}
+
+/** Plná šírka farebného oblúka (žiara ju používa aj keď je vizuálny prstenec tenší). */
+static int diaUiArcWidthFull() {
+    return (DIA_FACE_SIZE >= 280) ? 18 : 15;
+}
+
+static void diaUiRestoreMainArcStyle() {
+    if (!arc_bg) return;
+    lv_obj_set_size(arc_bg, DIA_FACE_SIZE, DIA_FACE_SIZE);
+    const int arc_w = diaUiArcWidthFull();
+    lv_obj_set_style_arc_width(arc_bg, arc_w, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc_bg, lv_color_hex(0x222222), LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(arc_bg, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc_bg, arc_w, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(arc_bg, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_center(arc_bg);
+    lv_obj_clear_flag(arc_bg, LV_OBJ_FLAG_HIDDEN);
+}
+
+/** Pump face: farebný prstenec o polovicu užší; žiara ostáva na plnej šírke. */
+static void diaUiApplyPumpArcStyle() {
+    diaUiRestoreMainArcStyle();
+    if (!arc_bg) return;
+    const int thin = diaUiArcWidthFull() / 2;
+    lv_obj_set_style_arc_width(arc_bg, thin, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc_bg, thin, LV_PART_INDICATOR);
+}
+
+/** Pozícia v súradniciach 240×240 face (ľavý horný roh objektu). */
+static void place_face_lt(lv_obj_t *obj, int x240, int y240) {
+    if (!obj) return;
+    const int ox = ((int)screenWidth - DIA_FACE_SIZE) / 2;
+    const int oy = DIA_FACE_OFFSET_Y;
+    lv_obj_align(obj, LV_ALIGN_TOP_LEFT, ox + faceX(x240), oy + faceY(y240));
+}
+
+static void place_face_mid(lv_obj_t *obj, int cx240, int cy240) {
+    if (!obj) return;
+    lv_obj_update_layout(obj);
+    const int ox = ((int)screenWidth - DIA_FACE_SIZE) / 2;
+    const int oy = DIA_FACE_OFFSET_Y;
+    const int w = lv_obj_get_width(obj);
+    const int h = lv_obj_get_height(obj);
+    // align TOP_LEFT – set_pos by nechal predchádzajúci TOP_MID z place_top
+    lv_obj_align(obj, LV_ALIGN_TOP_LEFT, ox + faceX(cx240) - w / 2, oy + faceY(cy240) - h / 2);
+}
+
+static void diaUiRefreshPumpBtn() {
+    if (!lbl_btn_pump) return;
+    const bool ns = diaAnyNightscout();
+    if (ns) {
+        lv_obj_clear_flag(lbl_btn_pump, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(lbl_btn_pump, S(show_pump ? Str::PumpOn : Str::PumpOff));
+    } else {
+        lv_obj_add_flag(lbl_btn_pump, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/** Satelitné kruhy: Sach↖ IOB↙ Delta↘ – glykémia ostáva vždy (aj bez pump JSON). */
+static void diaUiColorPumpSatellites(uint32_t color) {
+    lv_obj_t *arcs[] = {arc_pump_cob, arc_pump_iob, arc_pump_bg};
+    for (lv_obj_t *a : arcs) {
+        if (!a) continue;
+        lv_obj_set_style_arc_color(a, lv_color_hex(color), LV_PART_MAIN);
+        lv_obj_set_style_arc_color(a, lv_color_hex(color), LV_PART_INDICATOR);
+    }
+}
+
+/** Stred objektu v absolútnych px obrazovky (satelity mimo face kruhu). */
+static void place_screen_mid(lv_obj_t *obj, int cx, int cy) {
+    if (!obj) return;
+    lv_obj_update_layout(obj);
+    const int w = lv_obj_get_width(obj);
+    const int h = lv_obj_get_height(obj);
+    lv_obj_align(obj, LV_ALIGN_TOP_LEFT, cx - w / 2, cy - h / 2);
+}
+
+/** Kruhový pump face (240): vľavo Sach → gly(+šípka vnútri) → IOB s medzerami;
+ *  vpravo väčší čas (vycentrovaný) → graf nižšie → vek. */
+static void diaUiPlacePumpFaceRound() {
+    // Medzera medzi satelitmi; Sach/gly/IOB viac dovnútra (nie na obvod)
+    const int gap = 8;
+    const int cobS = 48, glyS = 72, iobS = 48;
+    const int cobCx = 70, cobCy = 52;
+    const int glyCx = 56; // trochu vľavo
+    const int glyCy = cobCy + cobS / 2 + gap + glyS / 2;
+    const int iobCx = 82;
+    const int iobCy = glyCy + glyS / 2 + gap + iobS / 2;
+    const int rightCx = 158;
+
+    if (arc_pump_cob) {
+        lv_obj_set_size(arc_pump_cob, cobS, cobS);
+        place_face_mid(arc_pump_cob, cobCx, cobCy);
+        lv_obj_clear_flag(arc_pump_cob, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (arc_pump_bg) {
+        lv_obj_set_size(arc_pump_bg, glyS, glyS);
+        place_face_mid(arc_pump_bg, glyCx, glyCy);
+        lv_obj_clear_flag(arc_pump_bg, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (arc_pump_iob) {
+        lv_obj_set_size(arc_pump_iob, iobS, iobS);
+        place_face_mid(arc_pump_iob, iobCx, iobCy);
+        lv_obj_clear_flag(arc_pump_iob, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Nápis (12) hore, hodnota v kruhu (Sach menšia aby sa zmestila; IOB 20)
+    if (label_pump_cob) {
+        lv_obj_set_width(label_pump_cob, cobS - 8);
+        lv_obj_set_style_text_font(label_pump_cob, &font_sk_12, LV_PART_MAIN);
+        lv_obj_set_style_text_align(label_pump_cob, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(label_pump_cob, "Sach.");
+        place_face_mid(label_pump_cob, cobCx, cobCy - 7);
+        lv_obj_clear_flag(label_pump_cob, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (label_pump_cob_val) {
+        lv_obj_set_width(label_pump_cob_val, cobS - 8);
+        lv_obj_set_style_text_font(label_pump_cob_val, &font_sk_16, LV_PART_MAIN);
+        lv_obj_set_style_text_align(label_pump_cob_val, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(label_pump_cob_val, LV_LABEL_LONG_CLIP);
+        place_face_mid(label_pump_cob_val, cobCx, cobCy + 7);
+        lv_obj_clear_flag(label_pump_cob_val, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (label_pump_iob) {
+        lv_obj_set_width(label_pump_iob, iobS - 8);
+        lv_obj_set_style_text_font(label_pump_iob, &font_sk_12, LV_PART_MAIN);
+        lv_obj_set_style_text_align(label_pump_iob, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(label_pump_iob, "IOB");
+        place_face_mid(label_pump_iob, iobCx, iobCy - 7);
+        lv_obj_clear_flag(label_pump_iob, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (label_pump_iob_val) {
+        lv_obj_set_width(label_pump_iob_val, iobS - 6);
+        lv_obj_set_style_text_font(label_pump_iob_val, &font_sk_20, LV_PART_MAIN);
+        lv_obj_set_style_text_align(label_pump_iob_val, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(label_pump_iob_val, LV_LABEL_LONG_CLIP);
+        place_face_mid(label_pump_iob_val, iobCx, iobCy + 7);
+        lv_obj_clear_flag(label_pump_iob_val, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Gly + trend vyššie v kruhu, väčší font gly
+    lv_obj_set_style_text_font(label_trend, &font_sk_20, LV_PART_MAIN);
+    lv_obj_set_style_text_font(label_glycemia, &font_sk_28, LV_PART_MAIN);
+    lv_obj_set_width(label_glycemia, glyS - 12);
+    lv_obj_set_style_text_align(label_glycemia, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(label_glycemia, LV_LABEL_LONG_CLIP);
+    place_face_mid(label_trend, glyCx, glyCy - 16);
+    lv_obj_clear_flag(label_trend, LV_OBJ_FLAG_HIDDEN);
+    place_face_mid(label_glycemia, glyCx, glyCy + 6);
+    lv_obj_clear_flag(label_glycemia, LV_OBJ_FLAG_HIDDEN);
+
+    if (label_delta) lv_obj_add_flag(label_delta, LV_OBJ_FLAG_HIDDEN);
+
+    // Čas / graf / vek – posunuté nižšie ako jeden blok
+    lv_obj_set_style_text_font(label_time, &font_sk_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(label_time, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    place_face_mid(label_time, rightCx, 95); // ~2 mm nižšie; graf/vek bez zmeny
+    lv_obj_clear_flag(label_time, LV_OBJ_FLAG_HIDDEN);
+
+    if (chart_spark) {
+        diaUiStyleSpark(chart_spark, false);
+        lv_obj_set_size(chart_spark, 84, 46);
+        place_face_mid(chart_spark, rightCx, 148);
+        lv_obj_clear_flag(chart_spark, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    lv_obj_set_style_text_font(label_age, &font_sk_16, LV_PART_MAIN);
+    place_face_mid(label_age, rightCx, 196);
+    lv_obj_clear_flag(label_age, LV_OBJ_FLAG_HIDDEN);
+
+    if (arc_pump_bg) lv_obj_move_foreground(arc_pump_bg);
+    if (label_trend) lv_obj_move_foreground(label_trend);
+    if (label_glycemia) lv_obj_move_foreground(label_glycemia);
+    if (label_pump_cob) lv_obj_move_foreground(label_pump_cob);
+    if (label_pump_cob_val) lv_obj_move_foreground(label_pump_cob_val);
+    if (label_pump_iob) lv_obj_move_foreground(label_pump_iob);
+    if (label_pump_iob_val) lv_obj_move_foreground(label_pump_iob_val);
+    if (arc_pump_cob) lv_obj_move_foreground(arc_pump_cob);
+    if (label_time) lv_obj_move_foreground(label_time);
+
+    place_top(label_status, 0, 2);
+    if (label_source) lv_obj_add_flag(label_source, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump) lv_obj_add_flag(label_pump, LV_OBJ_FLAG_HIDDEN);
+}
+
+/** Široký pump face: stred čas/gly/šípka/graf/vek; satelity Sach↖ IOB↙ Delta↘ mimo kruhu. */
+static void diaUiPlacePumpFaceWide() {
+    const int sw = (int)screenWidth;
+    const int sh = (int)screenHeight;
+    const int satS = 80;
+    const int labW = 70;
+    const int cobCx = satS / 2 + 6;
+    const int cobCy = satS / 2 + 8;
+    const int iobCx = satS / 2 + 6;
+    const int iobCy = sh - satS / 2 - 8;
+    const int dltCx = sw - satS / 2 - 6;
+    const int dltCy = sh - satS / 2 - 8;
+
+    auto placeSat = [&](lv_obj_t *arc, lv_obj_t *lab, int cx, int cy, bool on) {
+        if (!on) {
+            if (arc) lv_obj_add_flag(arc, LV_OBJ_FLAG_HIDDEN);
+            if (lab) lv_obj_add_flag(lab, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        if (arc) {
+            lv_obj_set_size(arc, satS, satS);
+            place_screen_mid(arc, cx, cy);
+            lv_obj_clear_flag(arc, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (lab) {
+            lv_obj_set_width(lab, labW);
+            lv_obj_set_style_text_align(lab, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_line_space(lab, -2, LV_PART_MAIN);
+            lv_label_set_long_mode(lab, LV_LABEL_LONG_WRAP);
+            place_screen_mid(lab, cx, cy);
+            lv_obj_clear_flag(lab, LV_OBJ_FLAG_HIDDEN);
+        }
+    };
+
+    placeSat(arc_pump_cob, label_pump_cob, cobCx, cobCy, true);
+    placeSat(arc_pump_iob, label_pump_iob, iobCx, iobCy, true);
+    placeSat(arc_pump_bg, label_delta, dltCx, dltCy, show_delta);
+    if (label_pump_cob_val) lv_obj_add_flag(label_pump_cob_val, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump_iob_val) lv_obj_add_flag(label_pump_iob_val, LV_OBJ_FLAG_HIDDEN);
+    if (show_delta && label_delta) {
+        lv_obj_set_style_text_font(label_delta, &font_sk_16, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label_delta, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    }
+
+    const int arcW = (DIA_FACE_SIZE >= 280) ? 18 : 15;
+    const int innerTop = arcW + 22;
+    const int timeH = 48;
+    const int glyH = 72;
+    const int ageH = 22;
+    const int gapTimeGly = 6;
+    const int gapGlyTrend = 6;
+    const int gapChartAge = 6;
+
+    int y = innerTop;
+    place_top(label_time, 0, y);
+    lv_obj_clear_flag(label_time, LV_OBJ_FLAG_HIDDEN);
+
+    y += timeH + gapTimeGly;
+    place_top(label_glycemia, 0, y);
+    lv_obj_clear_flag(label_glycemia, LV_OBJ_FLAG_HIDDEN);
+
+    y += glyH + gapGlyTrend;
+    place_top(label_trend, 0, y);
+    lv_obj_clear_flag(label_trend, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_update_layout(label_trend);
+    const int trendBottomFace =
+        lv_obj_get_y(label_trend) + lv_obj_get_height(label_trend) - DIA_FACE_OFFSET_Y;
+
+    const int bottomPad = 30;
+    const int ageY = DIA_FACE_SIZE - arcW - bottomPad - ageH;
+    const int chartBot = ageY - gapChartAge;
+    int chartH = 160;
+    int chartY = chartBot - chartH;
+    const int minChartY = trendBottomFace + 6;
+    if (chartY < minChartY) {
+        chartY = minChartY;
+        chartH = chartBot - chartY;
+        if (chartH < 20) chartH = 20;
+    }
+
+    if (chart_spark) {
+        diaUiStyleSpark(chart_spark, true);
+        lv_obj_set_size(chart_spark, 140, chartH);
+        place_top(chart_spark, 0, chartY);
+        lv_obj_clear_flag(chart_spark, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    place_top(label_age, 0, ageY);
+    lv_obj_clear_flag(label_age, LV_OBJ_FLAG_HIDDEN);
+
+    place_top(label_status, 0, 2);
+    if (label_source) lv_obj_add_flag(label_source, LV_OBJ_FLAG_HIDDEN);
+    if (label_pump) lv_obj_add_flag(label_pump, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void diaUiPlacePumpFace() {
+    if (!label_glycemia) return;
+    if (diaBoardIsRound()) diaUiPlacePumpFaceRound();
+    else diaUiPlacePumpFaceWide();
+    // Pump prvky idú foreground – menu/dialógy musia ostať navrchu
+    if (diaUiFaceOverlaysOpen()) diaUiRaiseOverlays();
+}
+
+static void diaUiRefreshPumpLabel() {
+    if (s_bootUiLock || diaUiIsSplitMode() || watchface_style != 3 || !show_pump ||
+        !diaAnyNightscout()) {
+        diaUiHidePumpExtras();
+        return;
+    }
+    if (!arc_pump_cob || !label_pump_cob || !label_pump_iob) return;
+
+    const int slot = diaShownSlot();
+    const DiaPumpStatus &p = slotPump[slot];
+    char cobVal[24], iobVal[24];
+    if (p.valid && p.hasCob)
+        snprintf(cobVal, sizeof(cobVal), "%.1fg", (double)p.cob);
+    else
+        snprintf(cobVal, sizeof(cobVal), "-");
+    if (p.valid && p.hasIob)
+        snprintf(iobVal, sizeof(iobVal), "%.2f", (double)p.iob);
+    else
+        snprintf(iobVal, sizeof(iobVal), "-");
+
+    if (diaBoardIsRound() && label_pump_cob_val && label_pump_iob_val) {
+        lv_label_set_text(label_pump_cob, "Sach.");
+        lv_label_set_text(label_pump_iob, "IOB");
+        lv_label_set_text(label_pump_cob_val, cobVal);
+        lv_label_set_text(label_pump_iob_val, iobVal);
+    } else {
+        char cob[40], iob[40];
+        snprintf(cob, sizeof(cob), "Sach.\n%s", cobVal);
+        snprintf(iob, sizeof(iob), "IOB\n%s", iobVal);
+        lv_label_set_text(label_pump_cob, cob);
+        lv_label_set_text(label_pump_iob, iob);
+    }
+    diaUiPlacePumpFace();
+    diaUiColorPumpSatellites(current_arc_color ? current_arc_color : 0xC41E3Au);
+}
+
 void apply_watchface() {
     if (s_bootUiLock) return;
-    if (watchface_style < 0 || watchface_style > 2) watchface_style = 0;
+    if (watchface_style < 0 || watchface_style > 3) watchface_style = 0;
+    if (watchface_style == 3 && (!show_pump || !diaAnyNightscout())) watchface_style = 0;
 
 #if defined(DIA_BOARD_WS_3_5)
     if (diaUiIsSplitMode()) {
+        diaUiHidePumpExtras();
         diaUiApplyDisplayMode();
         return;
     }
 #endif
+
+    if (watchface_style != 3) diaUiHidePumpExtras();
+    if (watchface_style != 3) diaUiRestoreMainArcStyle();
 
     if (chart_spark) lv_obj_add_flag(chart_spark, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_font(label_age, &font_sk_20, LV_PART_MAIN);
@@ -629,6 +1012,8 @@ void apply_watchface() {
     lv_obj_set_width(label_status, 110);
     lv_label_set_long_mode(label_glycemia, LV_LABEL_LONG_CLIP);
     lv_label_set_long_mode(label_age, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(label_delta, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_line_space(label_delta, 0, LV_PART_MAIN);
     lv_label_set_long_mode(label_status, LV_LABEL_LONG_CLIP);
 
     // Šípka + delta v jednom riadku (delta opticky na stred šípky).
@@ -673,7 +1058,7 @@ void apply_watchface() {
         place_top(label_glycemia, 0, faceY(108));
         placeArrowDelta(faceY(162));
         place_top(label_age, 0, faceY(210));
-    } else {
+    } else if (watchface_style == 2) {
         // Graf: od oblúka → zdroj → medzera → gly → medzera → šípka+delta → medzera → vek → medzera → graf
         lv_arc_set_bg_angles(arc_bg, 0, 360);
         lv_arc_set_angles(arc_bg, 0, 360);
@@ -696,10 +1081,37 @@ void apply_watchface() {
             place_top(chart_spark, 0, faceY(176));
             refresh_sparkline();
         }
+    } else if (watchface_style == 3) {
+        // Pump: kruh = Sach/gly/IOB vľavo + čas/graf/vek vpravo; široký = stredný stĺpec + satelity
+        const bool round = diaBoardIsRound();
+        diaUiApplyPumpArcStyle(); // užší farebný prstenec; žiara ostáva plná
+        lv_arc_set_bg_angles(arc_bg, 0, 360);
+        lv_arc_set_angles(arc_bg, 0, 360);
+        lv_arc_set_rotation(arc_bg, 270);
+
+        lv_obj_clear_flag(label_time, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_text_font(label_time, &font_sk_48, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label_time, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_set_style_text_font(label_glycemia, round ? &font_sk_28 : &font_sk_72, LV_PART_MAIN);
+        lv_obj_set_style_text_font(label_trend, round ? &font_sk_20 : &font_sk_48, LV_PART_MAIN);
+        lv_obj_set_style_text_font(label_age, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+        lv_obj_set_style_text_font(label_delta, &font_sk_16, LV_PART_MAIN);
+        if (label_pump_cob)
+            lv_obj_set_style_text_font(label_pump_cob, &font_sk_16, LV_PART_MAIN);
+        if (label_pump_iob)
+            lv_obj_set_style_text_font(label_pump_iob, &font_sk_16, LV_PART_MAIN);
+
+        diaUiPlacePumpFace();
+        if (chart_spark) refresh_sparkline();
+        updateClockDisplay();
     }
 
     updateSourceLabel();
+    if (watchface_style == 3 && label_source)
+        lv_obj_add_flag(label_source, LV_OBJ_FLAG_HIDDEN);
     updateDeltaLabel();
+    diaUiRefreshPumpLabel();
+    if (diaUiFaceOverlaysOpen()) diaUiRaiseOverlays();
 }
 
 static void clearMainOverlays() {
@@ -728,6 +1140,8 @@ static void clearMainOverlays() {
         lv_obj_add_flag(label_source, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(label_source, "");
     }
+    if (label_pump) lv_obj_add_flag(label_pump, LV_OBJ_FLAG_HIDDEN);
+    diaUiHidePumpExtras();
     // 3.5B dual: počas WiFi/setup žiadna cache / zdroj v pozadí
     if (label_source1) {
         lv_obj_add_flag(label_source1, LV_OBJ_FLAG_HIDDEN);
@@ -996,12 +1410,26 @@ static void main_screen_event_cb(lv_event_t *e) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
         if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT) {
             if (diaUiIsSplitMode()) {
-                // Dual: čísla (0) ↔ grafy (2) — rovnaké indexy ako single
-                watchface_style = (watchface_style == 2) ? 0 : 2;
+                // Dual: čísla (0) ↔ grafy (2) ↔ pumpa (3) ak NS+pump
+                const bool pumpOk = show_pump && diaAnyNightscout();
+                if (pumpOk) {
+                    if (dir == LV_DIR_LEFT) {
+                        if (watchface_style == 0) watchface_style = 2;
+                        else if (watchface_style == 2) watchface_style = 3;
+                        else watchface_style = 0;
+                    } else {
+                        if (watchface_style == 0) watchface_style = 3;
+                        else if (watchface_style == 3) watchface_style = 2;
+                        else watchface_style = 0;
+                    }
+                } else {
+                    watchface_style = (watchface_style == 2) ? 0 : 2;
+                }
             } else {
-                // Single: 0 → 1 → 2 → 0 (vľavo dopredu, vpravo dozadu)
-                if (dir == LV_DIR_LEFT) watchface_style = (watchface_style + 1) % 3;
-                else watchface_style = (watchface_style + 2) % 3;
+                // Single: 0 číslo, 1 čas, 2 graf, (+3 pumpa len pri NS + show_pump)
+                const int n = diaUiFacePageCount();
+                if (dir == LV_DIR_LEFT) watchface_style = (watchface_style + 1) % n;
+                else watchface_style = (watchface_style + n - 1) % n;
             }
             preferences.putInt("wf_style", watchface_style);
             apply_watchface();
@@ -1040,6 +1468,7 @@ void diaUiOpenSettings() {
     if (ui_sound_panel) lv_obj_add_flag(ui_sound_panel, LV_OBJ_FLAG_HIDDEN);
     if (label_name0) lv_obj_add_flag(label_name0, LV_OBJ_FLAG_HIDDEN);
     if (label_name1) lv_obj_add_flag(label_name1, LV_OBJ_FLAG_HIDDEN);
+    diaUiRefreshPumpBtn();
     lv_obj_clear_flag(ui_settings_panel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui_settings_panel);
 }
@@ -1329,6 +1758,34 @@ static void toggle_source_cb(lv_event_t *e) {
     } else {
         apply_watchface();
     }
+}
+
+static void toggle_pump_cb(lv_event_t *e) {
+    (void)e;
+    show_pump = !show_pump;
+    preferences.putBool("show_pump", show_pump);
+    diaUiRefreshPumpBtn();
+    if (!show_pump) {
+        diaPumpClear(0);
+        diaPumpClear(1);
+        if (watchface_style == 3) {
+            watchface_style = 0;
+            preferences.putInt("wf_style", watchface_style);
+        }
+        diaUiHidePumpExtras();
+    } else if (diaAnyNightscout()) {
+        // Single aj dual: hneď pump stránka (swipe 3.)
+        watchface_style = 3;
+        preferences.putInt("wf_style", watchface_style);
+        forceFetch = true; // IOB/COB – glykémia sa nemaže
+    }
+    if (diaUiIsSplitMode()) {
+        diaUiApplyDisplayMode();
+    } else {
+        apply_watchface();
+    }
+    // Zapnutie pumpy nesmie prekryť otvorené menu
+    if (diaUiFaceOverlaysOpen()) diaUiRaiseOverlays();
 }
 
 static void toggle_glow_cb(lv_event_t *e) {
@@ -1731,22 +2188,36 @@ void updateDeltaLabel() {
 
     lv_obj_clear_flag(label_delta, LV_OBJ_FLAG_HIDDEN);
 
+    // Široký pump: Delta v satelite; kruhový pump Delta nemá
+    const bool pumpFaceWide =
+        (watchface_style == 3 && show_pump && !diaUiIsSplitMode() && !diaBoardIsRound());
+
+    char val[16];
     if (!has_valid_reading || !has_delta) {
-        lv_label_set_text(label_delta, "");
-        return;
+        snprintf(val, sizeof(val), "-");
+    } else if (use_mgdl) {
+        int d = (int)lroundf(mmol_to_mgdl(last_delta_mmol));
+        if (d == 0) snprintf(val, sizeof(val), "±0");
+        else snprintf(val, sizeof(val), "%+d", d);
+    } else {
+        if (fabsf(last_delta_mmol) < 0.05f) snprintf(val, sizeof(val), "±0.0");
+        else snprintf(val, sizeof(val), "%+.1f", last_delta_mmol);
     }
 
-    char buf[16];
-    if (use_mgdl) {
-        int d = (int)lroundf(mmol_to_mgdl(last_delta_mmol));
-        if (d == 0) snprintf(buf, sizeof(buf), "±0");
-        else snprintf(buf, sizeof(buf), "%+d", d);
+    if (pumpFaceWide) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "Delta\n%s", val);
+        lv_label_set_text(label_delta, buf);
+        lv_obj_set_style_text_color(label_delta, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     } else {
-        if (fabsf(last_delta_mmol) < 0.05f) snprintf(buf, sizeof(buf), "±0.0");
-        else snprintf(buf, sizeof(buf), "%+.1f", last_delta_mmol);
+        if (!has_valid_reading || !has_delta) {
+            lv_label_set_text(label_delta, "");
+            return;
+        }
+        lv_label_set_text(label_delta, val);
+        lv_obj_set_style_text_color(label_delta, lv_color_hex(diaDeltaColor(last_delta_mmol)),
+                                    LV_PART_MAIN);
     }
-    lv_label_set_text(label_delta, buf);
-    lv_obj_set_style_text_color(label_delta, lv_color_hex(diaDeltaColor(last_delta_mmol)), LV_PART_MAIN);
 }
 
 void updateStaleAndErrorVisuals() {
@@ -1803,6 +2274,7 @@ void updateStaleAndErrorVisuals() {
     }
 
     // Single: číslo biele/sivé (stale / istý auth…; Network blip / boot-grace Auth nesiví)
+    // Pump face: farbu rozsahu rieši diaUiUpdateArcColors (okrem stale/err → sivá)
     if (!diaUiIsSplitMode() && has_valid_reading && label_glycemia) {
         const bool hardAuth = last_fetch_error == FetchError::Auth &&
                               (dsSource != "guardian" || diaUiShowClLoggedOut(last_fetch_error));
@@ -1810,7 +2282,7 @@ void updateStaleAndErrorVisuals() {
             (diaUiHardVisualErr(last_fetch_error, has_valid_reading) &&
              (last_fetch_error != FetchError::Auth || hardAuth))) {
             lv_obj_set_style_text_color(label_glycemia, lv_color_hex(0x888888), LV_PART_MAIN);
-        } else {
+        } else if (!(watchface_style == 3 && show_pump)) {
             lv_obj_set_style_text_color(label_glycemia, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
         }
     }
@@ -2028,6 +2500,36 @@ static void diaUiApplySplitSourceLabels() {
             lv_obj_clear_flag(lab, LV_OBJ_FLAG_HIDDEN);
             return;
         }
+        // Dual pump: 1) IOB/COB  2) bazál inak rezervoár  — vek je samostatne pod tým
+        if (diaUiIsSplitMode() && watchface_style == 3 && show_pump && diaUiProfileIsNs(slot)) {
+            char pumpBuf[96];
+            const DiaPumpStatus &p = slotPump[slot];
+            // Len ASCII – font_sk_* nemá „—“ (inak □)
+            if (p.valid && p.hasIob && p.hasCob)
+                snprintf(pumpBuf, sizeof(pumpBuf), "IOB %.2f   COB %.0fg", (double)p.iob, (double)p.cob);
+            else if (p.valid && p.hasIob)
+                snprintf(pumpBuf, sizeof(pumpBuf), "IOB %.2f   COB -", (double)p.iob);
+            else if (p.valid && p.hasCob)
+                snprintf(pumpBuf, sizeof(pumpBuf), "IOB -   COB %.0fg", (double)p.cob);
+            else
+                snprintf(pumpBuf, sizeof(pumpBuf), "IOB -   COB -");
+            size_t n = strlen(pumpBuf);
+            if (p.valid && p.hasBasal)
+                snprintf(pumpBuf + n, sizeof(pumpBuf) - n, "\n%.2f U/h", (double)p.basal);
+            else if (p.valid && p.hasReservoir)
+                snprintf(pumpBuf + n, sizeof(pumpBuf) - n, "\nrez. %.0f U", (double)p.reservoir);
+            else
+                snprintf(pumpBuf + n, sizeof(pumpBuf) - n, "\n-");
+            lv_label_set_text(lab, pumpBuf);
+            lv_obj_set_width(lab, 200);
+            lv_label_set_long_mode(lab, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_align(lab, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_line_space(lab, 2, LV_PART_MAIN);
+            lv_obj_set_style_text_font(lab, &font_sk_20, LV_PART_MAIN);
+            lv_obj_set_style_text_color(lab, lv_color_hex(0xE6EEF6), LV_PART_MAIN);
+            lv_obj_clear_flag(lab, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
         if (!show_source) {
             lv_label_set_text(lab, "");
             lv_obj_add_flag(lab, LV_OBJ_FLAG_HIDDEN);
@@ -2129,10 +2631,16 @@ void diaUiUpdateSlotFace(int slot) {
             if (split) {
 #if defined(DIA_BOARD_WS_3_5)
                 // Po "..." (font 20) musíme vrátiť veľký font – layout sa nemusí znova spustiť
-                const bool withChart = (diaUiSplitPage() == 1);
-                lv_obj_set_style_text_font(g, withChart ? &font_sk_72 : &font_sk_88, LV_PART_MAIN);
-                if (tr) {
-                    lv_obj_set_style_text_font(tr, withChart ? &font_sk_48 : &font_sk_72, LV_PART_MAIN);
+                const int sp = diaUiSplitPage();
+                if (sp == 2) {
+                    lv_obj_set_style_text_font(g, &font_sk_48, LV_PART_MAIN);
+                    if (tr) lv_obj_set_style_text_font(tr, &font_sk_48, LV_PART_MAIN);
+                } else if (sp == 1) {
+                    lv_obj_set_style_text_font(g, &font_sk_72, LV_PART_MAIN);
+                    if (tr) lv_obj_set_style_text_font(tr, &font_sk_48, LV_PART_MAIN);
+                } else {
+                    lv_obj_set_style_text_font(g, &font_sk_88, LV_PART_MAIN);
+                    if (tr) lv_obj_set_style_text_font(tr, &font_sk_72, LV_PART_MAIN);
                 }
 #endif
                 lv_obj_set_style_text_color(g, lv_color_hex(bad ? 0x888888u : s.arc_color),
@@ -2162,10 +2670,19 @@ void diaUiUpdateSlotFace(int slot) {
         updateDeltaLabel();
         updateAgeDisplay();
         refresh_sparkline();
-        if (arc_bg) lv_obj_set_style_arc_color(arc_bg, lv_color_hex(slotReadings[slot].arc_color),
-                                                LV_PART_INDICATOR);
+        if (arc_bg) {
+            lv_obj_set_style_arc_color(arc_bg, lv_color_hex(slotReadings[slot].arc_color),
+                                      LV_PART_INDICATOR);
+        }
+        if (watchface_style == 3 && show_pump)
+            diaUiColorPumpSatellites(slotReadings[slot].arc_color);
         updateSourceLabel();
         diaUiPlaceSingleName();
+        diaUiRefreshPumpLabel();
+        if (watchface_style == 3 && show_pump) {
+            diaUiPlacePumpFace();
+            lv_obj_clear_flag(label_glycemia, LV_OBJ_FLAG_HIDDEN);
+        }
     } else if (split && slot == 0) {
         fill(label_glycemia, label_trend, label_delta, label_age, label_name0);
 #if defined(DIA_BOARD_WS_3_5)
@@ -2210,10 +2727,12 @@ void diaUiApplyDisplayMode() {
     }
 
     if (split) {
-        // Dual: 0 = čísla, 2 = grafy (štýl 1 = čas len v single)
+        // Dual: 0 = čísla, 2 = grafy, 3 = pumpa (ak NS+show_pump)
         if (watchface_style == 1) watchface_style = 0;
-        if (watchface_style != 0 && watchface_style != 2) watchface_style = 0;
-        const int page = diaUiSplitPage(); // 0 čísla, 1 grafy
+        if (watchface_style == 3 && !(show_pump && diaAnyNightscout())) watchface_style = 0;
+        if (watchface_style != 0 && watchface_style != 2 && watchface_style != 3) watchface_style = 0;
+        diaUiHidePumpExtras(); // kruhové Sach/IOB len v single
+        const int page = diaUiSplitPage(); // 0 čísla, 1 grafy, 2 pumpa
 
         if (arc_bg) lv_obj_add_flag(arc_bg, LV_OBJ_FLAG_HIDDEN);
         if (label_status) {
@@ -2349,15 +2868,64 @@ void diaUiApplyDisplayMode() {
         if (page == 0) {
             if (chart_spark) lv_obj_add_flag(chart_spark, LV_OBJ_FLAG_HIDDEN);
             if (chart_spark1) lv_obj_add_flag(chart_spark1, LV_OBJ_FLAG_HIDDEN);
+            if (label_time) lv_obj_add_flag(label_time, LV_OBJ_FLAG_HIDDEN);
             placeSplitColNoChart(leftOff, label_glycemia, label_trend, label_delta, label_age, label_source);
             placeSplitColNoChart(rightOff, label_glycemia1, label_trend1, label_delta1, label_age1,
                                  label_source1);
-        } else {
+        } else if (page == 1) {
+            if (label_time) lv_obj_add_flag(label_time, LV_OBJ_FLAG_HIDDEN);
             placeSplitColWithChart(leftOff, label_glycemia, label_trend, label_delta, label_age, label_source,
                                    chart_spark, true);
             placeSplitColWithChart(rightOff, label_glycemia1, label_trend1, label_delta1, label_age1,
                                    label_source1, chart_spark1, false);
             refreshSplitSparklines();
+        } else {
+            // Pump dual: meno → menšia gly → medzera → trend+delta → IOB  COB → bazál/vek
+            if (chart_spark) lv_obj_add_flag(chart_spark, LV_OBJ_FLAG_HIDDEN);
+            if (chart_spark1) lv_obj_add_flag(chart_spark1, LV_OBJ_FLAG_HIDDEN);
+            if (label_time) lv_obj_add_flag(label_time, LV_OBJ_FLAG_HIDDEN);
+
+            auto placeSplitColPump = [&](int slot, int colOff, lv_obj_t *g, lv_obj_t *tr, lv_obj_t *dlt,
+                                         lv_obj_t *age, lv_obj_t *src) {
+                const bool nsPump = diaUiProfileIsNs(slot);
+                const int glyY = nameY + kSplitNameClear;
+                const int arrowY = glyY + 52;
+                const int iobY = arrowY + 52;
+                // src = 2 riadky (IOB/COB + bazál/rez) → medzera → vek
+                const int ageY = iobY + 60;
+
+                lv_obj_set_style_text_font(g, &font_sk_48, LV_PART_MAIN);
+                lv_obj_set_style_text_font(tr, &font_sk_48, LV_PART_MAIN);
+                lv_obj_set_style_text_font(dlt, &font_sk_20, LV_PART_MAIN);
+                lv_obj_set_style_text_font(age, &font_sk_20, LV_PART_MAIN);
+                if (src) lv_obj_set_style_text_font(src, &font_sk_20, LV_PART_MAIN);
+
+                lv_obj_align(g, LV_ALIGN_TOP_MID, colOff, glyY);
+                const int ax = show_delta ? -22 : 0;
+                lv_obj_align(tr, LV_ALIGN_TOP_MID, colOff + ax, arrowY);
+                if (dlt) {
+                    if (show_delta) {
+                        lv_obj_align(dlt, LV_ALIGN_TOP_MID, colOff + ax + 52, arrowY + 14);
+                        lv_obj_clear_flag(dlt, LV_OBJ_FLAG_HIDDEN);
+                    } else {
+                        lv_obj_add_flag(dlt, LV_OBJ_FLAG_HIDDEN);
+                    }
+                }
+                if (nsPump && src) {
+                    lv_obj_set_width(src, fw - 2 * pad);
+                    lv_obj_align(src, LV_ALIGN_TOP_MID, colOff, iobY);
+                    lv_obj_clear_flag(src, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_align(age, LV_ALIGN_TOP_MID, colOff, ageY);
+                } else {
+                    if (src) lv_obj_add_flag(src, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_align(age, LV_ALIGN_TOP_MID, colOff, iobY);
+                }
+                lv_obj_clear_flag(age, LV_OBJ_FLAG_HIDDEN);
+            };
+            placeSplitColPump(0, leftOff, label_glycemia, label_trend, label_delta, label_age,
+                              label_source);
+            placeSplitColPump(1, rightOff, label_glycemia1, label_trend1, label_delta1, label_age1,
+                              label_source1);
         }
     } else {
         lv_obj_add_flag(label_glycemia1, LV_OBJ_FLAG_HIDDEN);
@@ -2504,24 +3072,38 @@ void diaUiUpdateArcColors(uint32_t currentMillis) {
     }
 #endif
     // Single: stale / ťažká chyba > critical (Network blip necháva farbu)
+    const bool pumpFace = (watchface_style == 3 && show_pump);
+    auto paintArc = [&](uint32_t c) {
+        lv_obj_set_style_arc_color(arc_bg, lv_color_hex(c), LV_PART_INDICATOR);
+        if (pumpFace) diaUiColorPumpSatellites(c);
+    };
+    auto paintArcRgb = [&](uint8_t out_r, uint8_t out_g, uint8_t out_b) {
+        lv_obj_set_style_arc_color(arc_bg, lv_color_make(out_r, out_g, out_b), LV_PART_INDICATOR);
+        if (pumpFace) {
+            const uint32_t c = ((uint32_t)out_r << 16) | ((uint32_t)out_g << 8) | out_b;
+            diaUiColorPumpSatellites(c);
+        }
+        // Pump face: glykémia v farbe rozsahu (ako mockup) + blink pri critical
+        if (pumpFace && label_glycemia && has_valid_reading && !data_is_stale)
+            lv_obj_set_style_text_color(label_glycemia, lv_color_make(out_r, out_g, out_b),
+                                        LV_PART_MAIN);
+    };
+
     if (data_is_stale || diaUiHardVisualErr(last_fetch_error, has_valid_reading)) {
-        lv_obj_set_style_arc_color(arc_bg, lv_color_hex(0x555555), LV_PART_INDICATOR);
+        paintArc(0x555555u);
     } else if (is_critical) {
         uint8_t r = (current_arc_color >> 16) & 0xFF;
         uint8_t g = (current_arc_color >> 8) & 0xFF;
         uint8_t b = current_arc_color & 0xFF;
-
-        uint8_t dark_r = r / 4;
-        uint8_t dark_g = g / 4;
-        uint8_t dark_b = b / 4;
-
-        uint8_t out_r = (uint8_t)(dark_r + pulse * (r - dark_r));
-        uint8_t out_g = (uint8_t)(dark_g + pulse * (g - dark_g));
-        uint8_t out_b = (uint8_t)(dark_b + pulse * (b - dark_b));
-
-        lv_obj_set_style_arc_color(arc_bg, lv_color_make(out_r, out_g, out_b), LV_PART_INDICATOR);
+        uint8_t dark_r = r / 4, dark_g = g / 4, dark_b = b / 4;
+        paintArcRgb((uint8_t)(dark_r + pulse * (r - dark_r)),
+                    (uint8_t)(dark_g + pulse * (g - dark_g)),
+                    (uint8_t)(dark_b + pulse * (b - dark_b)));
     } else {
-        lv_obj_set_style_arc_color(arc_bg, lv_color_hex(current_arc_color), LV_PART_INDICATOR);
+        paintArc(current_arc_color);
+        if (pumpFace && label_glycemia && has_valid_reading)
+            lv_obj_set_style_text_color(label_glycemia, lv_color_hex(current_arc_color),
+                                        LV_PART_MAIN);
     }
 }
 
@@ -2756,6 +3338,7 @@ static void diaUiArcInwardFade(lv_event_t *e) {
     lv_coord_t bottom = lv_obj_get_style_pad_bottom(obj, LV_PART_MAIN);
     lv_coord_t outer = (LV_MIN(lv_obj_get_width(obj) - left - right,
                                lv_obj_get_height(obj) - top - bottom)) / 2;
+    // Štart žiary = vnútorný okraj aktuálneho (aj tenšieho) prstenca; bands/peak v GlowBuild ostávajú
     lv_coord_t ring = lv_obj_get_style_arc_width(obj, LV_PART_INDICATOR);
     if (outer <= ring + 4) return;
 
@@ -2820,6 +3403,58 @@ void build_ui() {
     lv_obj_set_style_text_color(label_source, lv_color_hex(0x88AACC), LV_PART_MAIN);
     lv_obj_set_style_text_font(label_source, &font_sk_16, LV_PART_MAIN);
     lv_obj_add_flag(label_source, LV_OBJ_FLAG_HIDDEN);
+
+    label_pump = lv_label_create(lv_scr_act());
+    lv_label_set_text(label_pump, "");
+    lv_obj_set_width(label_pump, faceX(168));
+    lv_obj_set_style_text_color(label_pump, lv_color_hex(0xE6EEF6), LV_PART_MAIN);
+    lv_obj_set_style_text_font(label_pump, &font_sk_16, LV_PART_MAIN);
+    lv_obj_set_style_text_align(label_pump, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(label_pump, 2, LV_PART_MAIN);
+    lv_label_set_long_mode(label_pump, LV_LABEL_LONG_WRAP);
+    lv_obj_add_flag(label_pump, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(label_pump, LV_OBJ_FLAG_CLICKABLE);
+
+    auto makePumpArc = [](lv_coord_t sz) -> lv_obj_t * {
+        lv_obj_t *a = lv_arc_create(lv_scr_act());
+        lv_obj_set_size(a, sz, sz);
+        lv_arc_set_bg_angles(a, 0, 360);
+        lv_arc_set_angles(a, 0, 360);
+        lv_arc_set_rotation(a, 270);
+        lv_obj_set_style_arc_width(a, 2, LV_PART_MAIN);
+        lv_obj_set_style_arc_color(a, lv_color_hex(0xC41E3A), LV_PART_MAIN);
+        lv_obj_set_style_arc_width(a, 2, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(a, lv_color_hex(0xC41E3A), LV_PART_INDICATOR);
+        lv_obj_remove_style(a, NULL, LV_PART_KNOB);
+        lv_obj_clear_flag(a, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(a, LV_OBJ_FLAG_HIDDEN);
+        return a;
+    };
+    arc_pump_cob = makePumpArc(faceX(64));
+    arc_pump_iob = makePumpArc(faceX(64));
+    arc_pump_bg = makePumpArc(faceX(86));
+
+    auto makePumpLab = []() -> lv_obj_t * {
+        lv_obj_t *l = lv_label_create(lv_scr_act());
+        lv_label_set_text(l, "");
+        lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_set_style_text_font(l, &font_sk_16, LV_PART_MAIN);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_line_space(l, -2, LV_PART_MAIN);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, faceX(56));
+        lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE);
+        return l;
+    };
+    label_pump_cob = makePumpLab();
+    label_pump_iob = makePumpLab();
+    label_pump_cob_val = makePumpLab();
+    label_pump_iob_val = makePumpLab();
+    if (label_pump_cob_val)
+        lv_obj_set_style_text_font(label_pump_cob_val, &font_sk_20, LV_PART_MAIN);
+    if (label_pump_iob_val)
+        lv_obj_set_style_text_font(label_pump_iob_val, &font_sk_20, LV_PART_MAIN);
 
     auto makeSpark = [](lv_obj_t **outChart, lv_chart_series_t **outSer) {
         *outChart = lv_chart_create(lv_scr_act());
@@ -2945,10 +3580,12 @@ void build_ui() {
 
     auto setup_menu_tile = [](lv_obj_t *tile) {
 #if defined(DIA_BOARD_WS_3_5)
-        // Dva stĺpce – menej vertikálneho scrollu (ten pri full-refresh sekal)
+        // Dva stĺpce – centrované (START nechávalo ~48 px dieru vpravo → „vyosené“)
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW_WRAP);
-        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(tile, 12, LV_PART_MAIN);
+        lv_obj_set_style_pad_left(tile, 18, LV_PART_MAIN);
+        lv_obj_set_style_pad_right(tile, 18, LV_PART_MAIN);
 #else
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3052,6 +3689,9 @@ void build_ui() {
     lbl_btn_units = create_menu_btn(tileLook, S(use_mgdl ? Str::UnitsMg : Str::UnitsMmol), toggle_units_cb, 0, 0x333366);
     lbl_btn_delta = create_menu_btn(tileLook, S(show_delta ? Str::DeltaOn : Str::DeltaOff), toggle_delta_cb, 0, 0x333366);
     lbl_btn_source = create_menu_btn(tileLook, S(show_source ? Str::SourceOn : Str::SourceOff), toggle_source_cb, 0, 0x333366);
+    // Pumpa (NS IOB/COB) – 1 aj 2 kontá; skryté keď nie je Nightscout
+    lbl_btn_pump = create_menu_btn(tileLook, S(show_pump ? Str::PumpOn : Str::PumpOff), toggle_pump_cb, 0, 0x333366);
+    diaUiRefreshPumpBtn();
     lbl_btn_glow = create_menu_btn(tileLook, S(show_glow ? Str::GlowOn : Str::GlowOff), toggle_glow_cb, 0, 0x333366);
 #if defined(DIA_BOARD_WS_3_5)
     lbl_btn_orient = create_menu_btn(tileLook, S(diaUiOrientStr()), toggle_orient_cb, 0, 0x333366);
@@ -3438,6 +4078,23 @@ static void lang_ok_cb(lv_event_t *e) {
     s_lang_ok = true;
 }
 
+/** BOOT: 0=nič, 1=krátky stisk, 2=dlhý (≥700 ms). Na setup bez touchu. */
+static int diaUiPollBootGesture() {
+    static bool wasDown = false;
+    static uint32_t downAt = 0;
+    const bool down = digitalRead(BOOT_BTN) == LOW;
+    int result = 0;
+    if (down && !wasDown) {
+        downAt = millis();
+    } else if (!down && wasDown) {
+        const uint32_t held = millis() - downAt;
+        if (held >= 40 && held < 700) result = 1;
+        else if (held >= 700) result = 2;
+    }
+    wasDown = down;
+    return result;
+}
+
 bool diaUiRunLanguageSetup(bool force) {
     if (!force && !diaI18nNeedsSetup()) return false;
     s_lang_pick = (!diaI18nNeedsSetup()) ? (int)diaI18nGet() : -1;
@@ -3446,8 +4103,11 @@ bool diaUiRunLanguageSetup(bool force) {
     s_langBtnN = 0;
     s_bootUiLock = true;
     diaUiHideSplash();
+    pinMode(BOOT_BTN, INPUT_PULLUP);
 
     const bool round = diaBoardIsRound();
+    const bool needBoot = !diaBoardTouchOk();
+    if (needBoot) esp_rom_printf("[ui] language: no touch – use BOOT\n");
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(overlay, screenWidth, screenHeight);
     lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), LV_PART_MAIN);
@@ -3460,7 +4120,7 @@ bool diaUiRunLanguageSetup(bool force) {
     lv_obj_move_foreground(overlay);
 
     lv_obj_t *title = lv_label_create(overlay);
-    lv_label_set_text(title, "Language / Jazyk");
+    lv_label_set_text(title, needBoot ? "Language (BOOT)" : "Language / Jazyk");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(title, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
     lv_obj_clear_flag(title, LV_OBJ_FLAG_CLICKABLE);
@@ -3503,6 +4163,14 @@ bool diaUiRunLanguageSetup(bool force) {
     lv_obj_set_style_text_color(okLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_center(okLbl);
     lv_obj_clear_flag(okLbl, LV_OBJ_FLAG_CLICKABLE);
+    if (needBoot) {
+        lv_obj_t *hint = lv_label_create(overlay);
+        lv_label_set_text(hint, "BOOT short=next  hold=OK");
+        lv_obj_set_style_text_color(hint, lv_color_hex(0x1FA3EC), LV_PART_MAIN);
+        lv_obj_set_style_text_font(hint, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+        lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, round ? -4 : -2);
+        if (s_lang_pick < 0) s_lang_pick = 0;
+    }
     langPaintSelection();
 
     uint32_t lastTick = millis();
@@ -3511,6 +4179,15 @@ bool diaUiRunLanguageSetup(bool force) {
         lv_tick_inc(now - lastTick);
         lastTick = now;
         lv_timer_handler();
+        if (needBoot) {
+            const int g = diaUiPollBootGesture();
+            if (g == 1 && n > 0) {
+                s_lang_pick = (s_lang_pick + 1) % n;
+                langPaintSelection();
+            } else if (g == 2 && s_lang_pick >= 0) {
+                s_lang_ok = true;
+            }
+        }
         delay(5);
     }
 
@@ -3566,8 +4243,11 @@ bool diaUiRunLegalConsent() {
     s_legalBox = nullptr;
     s_bootUiLock = true;
     diaUiHideSplash();
+    pinMode(BOOT_BTN, INPUT_PULLUP);
 
     const bool round = diaBoardIsRound();
+    const bool needBoot = !diaBoardTouchOk();
+    if (needBoot) esp_rom_printf("[ui] legal: no touch – use BOOT\n");
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(overlay, screenWidth, screenHeight);
     lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), LV_PART_MAIN);
@@ -3679,6 +4359,13 @@ bool diaUiRunLegalConsent() {
     lv_obj_set_style_text_color(langLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_center(langLbl);
     lv_obj_clear_flag(langLbl, LV_OBJ_FLAG_CLICKABLE);
+    if (needBoot) {
+        lv_obj_t *hint = lv_label_create(overlay);
+        lv_label_set_text(hint, "BOOT short=check  hold=OK");
+        lv_obj_set_style_text_color(hint, lv_color_hex(0x1FA3EC), LV_PART_MAIN);
+        lv_obj_set_style_text_font(hint, round ? &font_sk_16 : &font_sk_20, LV_PART_MAIN);
+        lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+    }
 
     uint32_t lastTick = millis();
     for (;;) {
@@ -3687,6 +4374,15 @@ bool diaUiRunLegalConsent() {
             lv_tick_inc(now - lastTick);
             lastTick = now;
             lv_timer_handler();
+            if (needBoot) {
+                const int g = diaUiPollBootGesture();
+                if (g == 1) {
+                    s_legalChecked = !s_legalChecked;
+                    legalApplyCheckVisual();
+                } else if (g == 2 && s_legalChecked) {
+                    s_legalAcceptedClick = true;
+                }
+            }
             delay(5);
         }
         if (s_legalWantLang) {
@@ -3726,6 +4422,7 @@ static void diaUiApplyLanguage() {
     diaUiRefreshChildBtn();
     if (lbl_btn_delta) lv_label_set_text(lbl_btn_delta, S(show_delta ? Str::DeltaOn : Str::DeltaOff));
     if (lbl_btn_source) lv_label_set_text(lbl_btn_source, S(show_source ? Str::SourceOn : Str::SourceOff));
+    diaUiRefreshPumpBtn();
     if (lbl_btn_glow) lv_label_set_text(lbl_btn_glow, S(show_glow ? Str::GlowOn : Str::GlowOff));
     diaUiRefreshOrientBtn();
     if (lbl_btn_units) lv_label_set_text(lbl_btn_units, S(use_mgdl ? Str::UnitsMg : Str::UnitsMmol));

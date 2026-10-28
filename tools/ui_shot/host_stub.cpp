@@ -191,18 +191,21 @@ void diaBoardPresentLand(const uint16_t *land) {
     g_presented = true;
 }
 bool diaBoardTouchRead(int16_t *, int16_t *) { return false; }
+bool diaBoardTouchOk() { return true; }
 #if defined(DIA_BOARD_WS_3_5)
 bool diaBoardIsRound() { return false; }
 const char *diaBoardName() { return "ws35"; }
 bool diaBoardPreferFullRefresh() { return true; }
 bool diaBoardIsLandscape() { return true; }
 bool diaBoardHasAudio() { return true; }
+int diaBoardI2sMclkPin() { return 12; }
 #else
 bool diaBoardIsRound() { return true; }
 const char *diaBoardName() { return "ws128"; }
 bool diaBoardPreferFullRefresh() { return false; }
 bool diaBoardIsLandscape() { return false; }
 bool diaBoardHasAudio() { return false; }
+int diaBoardI2sMclkPin() { return -1; }
 #endif
 void diaBoardSpeakerAmp(bool) {}
 bool diaBoardSupportsOrient() { return false; }

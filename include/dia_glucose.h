@@ -62,6 +62,24 @@ struct DiaSlotReading {
     int history_count = 0;
 };
 extern DiaSlotReading slotReadings[2];
+
+/** Doplnok z Nightscout devicestatus (AAPS / Loop). Platí len keď server údaje má. */
+struct DiaPumpStatus {
+    bool valid = false;
+    bool hasIob = false;
+    bool hasCob = false;
+    bool hasBasal = false;
+    float iob = 0;
+    float cob = 0;
+    float basal = 0;
+    bool hasReservoir = false;
+    float reservoir = 0;
+    int batteryPct = -1;
+};
+extern DiaPumpStatus slotPump[2];
+void diaPumpClear(int slot);
+/** compact = jeden riadok pre dual. Inak viac riadkov pre ciferník pumpy. */
+void diaPumpFormat(int slot, char *buf, size_t n, bool compact);
 void glucoseSyncGlobalsFromSlot(int slot);
 void glucoseStoreReadingSlot(int slot, float mmol, const String &trendSymbol, long unix_ts,
                              bool hasSourceDelta = false, float sourceDeltaMmol = 0.0f);

@@ -87,6 +87,8 @@ extern int night_start_hour;
 extern bool use_mgdl;
 extern bool show_delta;
 extern bool show_source;
+/** Nightscout pump údaje (IOB/COB/basal). Default ZAP ak je NS. */
+extern bool show_pump;
 extern bool show_glow;
 /** 3.5B: 0=USB vpravo, 1=USB vľavo. Round ignoruje. */
 extern uint8_t orient_mode;
@@ -131,3 +133,5 @@ bool diaProfileConfigured(int slot);
 int diaShownSlot();
 bool diaProfileActive(int slot);
 int diaProfileActiveCount();
+/** true = aspoň jeden aktívny profil má Nightscout (IOB/COB má zmysel). */
+bool diaAnyNightscout();

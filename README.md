@@ -32,9 +32,10 @@ The firmware is optimized for the following Waveshare development boards. **Impo
 | Board Model | PlatformIO Env | Display Mode | OTA Folder | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | **[Waveshare ESP32-S3 1.28" round](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.28)** (GC9A01) | `waveshare_s3_1_28` | **Solo** (1 user) | `update/solo/` | Circular design |
-| **[Waveshare ESP32-S3-Touch-LCD-3.5B](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-3.5B)** | `waveshare_s3_3_5` | **Duo** (1–2 users) | `update/duo/` | Rectangular display, audio support |
+| **[Waveshare ESP32-S3-Touch-LCD-3.5B](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-3.5B)** (AXS15231B QSPI) | `waveshare_s3_3_5` | **Duo** (1–2 users) | `update/duo/` | Auto-detect; also supports non-B **3.5** (ST7796 SPI + FT6336) |
+| **[Waveshare ESP32-S3-Touch-LCD-3.5](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-3.5)** (ST7796 SPI) | `waveshare_s3_3_5` | **Duo** (same build) | `update/duo/` | Looks like 3.5B but **different LCD/touch** — factory 3.5B image stays black |
 
-*(Note for the 3.5B board: For manual upload, use the `waveshare_s3_3_5_manual` env and follow this sequence: hold BOOT → press RST → release BOOT).*
+*(3.5 vs 3.5B: same PCB outline, incompatible display silicon. Firmware env `waveshare_s3_3_5` auto-selects ST7796 vs AXS via I2C touch address 0x38 vs 0x3B. Manual upload: env `waveshare_s3_3_5_manual` — hold BOOT → RST → release BOOT).*
 
 ### Firmware Installation
 

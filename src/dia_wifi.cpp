@@ -767,8 +767,10 @@ static void handleDiaParamPage() {
         return;
     }
 
-    String src0 = custom_source ? String(custom_source->getValue()) : profiles[0].dsSource;
-    String src1 = custom_p1_source ? String(custom_p1_source->getValue()) : profiles[1].dsSource;
+    diaWifiSyncWmFromProfiles();
+    // Vždy z profiles[] – getValue() bez syncu ukazoval predchádzajúci Libre/…
+    String src0 = profiles[0].dsSource;
+    String src1 = profiles[1].dsSource;
     String units = use_mgdl ? "mgdl" : "mmol";
     if (custom_units) units = custom_units->getValue();
     String tls = tls_insecure ? "ano" : "nie";
@@ -857,12 +859,11 @@ static void handleDiaParamPage() {
         page += F(">");
         page += S(Str::PortalUserA);
         page += F("</h3>");
-        diaField(page, S(Str::PortalName), "p0_name",
-                 custom_p0_name ? String(custom_p0_name->getValue()) : profiles[0].name);
+        diaField(page, S(Str::PortalName), "p0_name", profiles[0].name);
     }
     {
         String listA = profiles[0].carelink_patient_list;
-        String curA = custom_cl_patient ? String(custom_cl_patient->getValue()) : profiles[0].carelink_patient_pref;
+        String curA = profiles[0].carelink_patient_pref;
         diaPortalSourceBlock(
             page, false, src0,
             custom_ns_url ? String(custom_ns_url->getValue()) : profiles[0].nsUrl,
@@ -888,14 +889,13 @@ static void handleDiaParamPage() {
         page += F("><h3 class=b>");
         page += S(Str::PortalUserB);
         page += F("</h3>");
-        diaField(page, S(Str::PortalName), "p1_name",
-                 custom_p1_name ? String(custom_p1_name->getValue()) : profiles[1].name);
+        diaField(page, S(Str::PortalName), "p1_name", profiles[1].name);
         {
             const bool ownB = carelinkSlotOwnsTokens(1);
             String listB = profiles[1].carelink_patient_list;
             if (!ownB && listB.length() == 0 && src1.equalsIgnoreCase("guardian"))
                 listB = profiles[0].carelink_patient_list;
-            String curB = custom_p1_cl_pref ? String(custom_p1_cl_pref->getValue()) : profiles[1].carelink_patient_pref;
+            String curB = profiles[1].carelink_patient_pref;
             diaPortalSourceBlock(
                 page, true, src1,
                 custom_p1_ns_url ? String(custom_p1_ns_url->getValue()) : profiles[1].nsUrl,
@@ -1195,6 +1195,39 @@ static void wizSet(WiFiManagerParameter *p, const String &v) {
     if (!p) return;
     if ((int)v.length() > p->getValueLength()) return;
     p->setValue(v.c_str(), p->getValueLength());
+}
+
+void diaWifiSyncWmFromProfiles() {
+    // CareLink / NVS mení profiles[] priamo – bez syncu /param číta starý WM (Libre namiesto Guardian).
+    if (custom_disp_mode) wizSet(custom_disp_mode, display_mode >= 2 ? "2" : "1");
+    wizSet(custom_p0_name, profiles[0].name);
+    wizSet(custom_source, profiles[0].dsSource);
+    wizSet(custom_ns_url, profiles[0].nsUrl);
+    wizSet(custom_llu_user, profiles[0].libreUser);
+    wizSet(custom_llu_region, profiles[0].libreRegion);
+    wizSet(custom_libre_patient, profiles[0].libre_patient_pref);
+    wizSet(custom_cl_patient, profiles[0].carelink_patient_pref);
+    wizSet(custom_dx_user, profiles[0].dexUser);
+    wizSet(custom_dx_region, profiles[0].dexRegion);
+    if (custom_t_low) wizSet(custom_t_low, String(profiles[0].targetLow, 1));
+    if (custom_t_high) wizSet(custom_t_high, String(profiles[0].targetHigh, 1));
+    if (custom_t_crit) wizSet(custom_t_crit, String(profiles[0].targetCrit, 1));
+    if (custom_p1_name) {
+        wizSet(custom_p1_name, profiles[1].name);
+        wizSet(custom_p1_source, profiles[1].dsSource);
+        wizSet(custom_p1_ns_url, profiles[1].nsUrl);
+        wizSet(custom_p1_llu_user, profiles[1].libreUser);
+        wizSet(custom_p1_llu_reg, profiles[1].libreRegion);
+        wizSet(custom_p1_libre_pref, profiles[1].libre_patient_pref);
+        wizSet(custom_p1_cl_pref, profiles[1].carelink_patient_pref);
+        wizSet(custom_p1_dx_user, profiles[1].dexUser);
+        wizSet(custom_p1_dx_reg, profiles[1].dexRegion);
+        if (custom_p1_t_low) wizSet(custom_p1_t_low, String(profiles[1].targetLow, 1));
+        if (custom_p1_t_high) wizSet(custom_p1_t_high, String(profiles[1].targetHigh, 1));
+        if (custom_p1_t_crit) wizSet(custom_p1_t_crit, String(profiles[1].targetCrit, 1));
+    }
+    if (custom_units) wizSet(custom_units, use_mgdl ? "mgdl" : "mmol");
+    if (custom_tls) wizSet(custom_tls, tls_insecure ? "ano" : "nie");
 }
 
 static int wizAdvance(int step) {
@@ -2201,6 +2234,7 @@ void diaWifiSavePortalConfigIfNeeded() {
     preferences.putBool("use_mgdl", use_mgdl);
     preferences.putBool("tls_insec", tls_insecure);
     diaConfigSaveProfiles();
+    diaWifiSyncWmFromProfiles();
 
     {
         String langVal;

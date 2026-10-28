@@ -44,6 +44,9 @@ static bool diaFetchAborted() {
     return s_fetchRunEpoch != s_fetchEpoch;
 }
 
+/** Po nsFetchPump – diaFetchPoll obnoví face (IOB) bez čakania na ďalší cyklus. */
+static volatile int s_nsPumpUiSlot = -1;
+
 static void sha256_hex(const String &input, char *out_hex /* min 65 */) {
     unsigned char hash[32];
     mbedtls_sha256((const unsigned char *)input.c_str(), input.length(), hash, 0);
@@ -816,6 +819,177 @@ static void nsSha1Hex(const String &input, char outHex[41]) {
     outHex[40] = '\0';
 }
 
+static bool nsIsGluroo(const String &url) {
+    String lower = url;
+    lower.toLowerCase();
+    return lower.indexOf("gluroo.com") >= 0;
+}
+
+static time_t nsUtcFromParts(int year, int mon, int day, int hour, int min, int sec) {
+    if (mon < 1 || mon > 12 || day < 1 || day > 31) return 0;
+    int y = year;
+    int m = mon;
+    if (m <= 2) {
+        y -= 1;
+        m += 12;
+    }
+    const long days = 365L * y + y / 4 - y / 100 + y / 400 + (153 * (m - 3) + 2) / 5 + day - 719469;
+    return (time_t)days * 86400L + hour * 3600 + min * 60 + sec;
+}
+
+static time_t nsParseIsoUtc(const char *s) {
+    if (!s || !s[0]) return 0;
+    int year = 0, mon = 0, day = 0, hour = 0, min = 0, sec = 0;
+    if (sscanf(s, "%d-%d-%dT%d:%d:%d", &year, &mon, &day, &hour, &min, &sec) < 6) return 0;
+    time_t utc = nsUtcFromParts(year, mon, day, hour, min, sec);
+    if (utc < 1700000000) return 0;
+    const char *tpos = strchr(s, 'T');
+    const char *tz = tpos ? strpbrk(tpos + 1, "+-") : nullptr;
+    if (tz && (tz[0] == '+' || tz[0] == '-') && strlen(tz) >= 3) {
+        int oh = 0, om = 0;
+        if (sscanf(tz + 1, "%d:%d", &oh, &om) >= 1) {
+            int off = oh * 3600 + om * 60;
+            utc += (tz[0] == '+') ? -off : off;
+        }
+    }
+    return utc;
+}
+
+static float nsNum(JsonVariant v, bool *ok) {
+    if (v.is<float>() || v.is<int>() || v.is<double>()) {
+        if (ok) *ok = true;
+        return v.as<float>();
+    }
+    if (ok) *ok = false;
+    return 0;
+}
+
+/** IOB/COB – až PO apply glykémie. Jeden TLS režim (ten čo prešiel na entries). */
+static void nsFetchPump(const String &base, const char *apiSecretHdr, bool tlsInsecure) {
+    const int slot = diaFetchCurrentSlot();
+    if (slot < 0 || slot > 1) return;
+    if (!show_pump) {
+        diaPumpClear(slot);
+        return;
+    }
+    if (nsIsGluroo(base)) {
+        diaPumpClear(slot);
+        return;
+    }
+    if (ESP.getFreeHeap() < 24000) {
+        Serial.println("NS pump preskocena, malo heap");
+        return;
+    }
+
+    String url = base + "/api/v1/devicestatus.json?count=1";
+    if (nsToken.length() > 0) url += "&token=" + nsToken;
+
+    int httpCode = -1;
+    String payload;
+    {
+        WiFiClientSecure client;
+        configureTlsClient(client, tlsInsecure);
+        HTTPClient http;
+        http.setTimeout(4000);
+        if (http.begin(client, url)) {
+            if (apiSecretHdr && apiSecretHdr[0]) http.addHeader("api-secret", apiSecretHdr);
+            httpCode = http.GET();
+            if (httpCode == HTTP_CODE_OK) payload = http.getString();
+            http.end();
+        }
+    }
+    Serial.printf("NS pump HTTP %d\n", httpCode);
+    if (httpCode != HTTP_CODE_OK) {
+        if (httpCode == HTTP_CODE_NOT_FOUND || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
+            diaPumpClear(slot);
+        return;
+    }
+
+    JsonDocument filter;
+    JsonObject f0 = filter.add<JsonObject>();
+    f0["date"] = true;
+    f0["created_at"] = true;
+    f0["openaps"]["iob"]["iob"] = true;
+    f0["openaps"]["iob"]["timestamp"] = true;
+    f0["openaps"]["suggested"]["COB"] = true;
+    f0["openaps"]["suggested"]["IOB"] = true;
+    f0["openaps"]["enacted"]["rate"] = true;
+    f0["openaps"]["enacted"]["timestamp"] = true;
+    f0["loop"]["iob"]["iob"] = true;
+    f0["loop"]["cob"]["cob"] = true;
+    f0["pump"]["reservoir"] = true;
+    f0["pump"]["battery"] = true;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+        diaPumpClear(slot);
+        return;
+    }
+    payload = "";
+    JsonObject row = doc.is<JsonArray>() ? doc[0].as<JsonObject>() : doc.as<JsonObject>();
+    if (row.isNull()) {
+        diaPumpClear(slot);
+        return;
+    }
+
+    time_t stamp = 0;
+    if (row["date"].is<long long>() || row["date"].is<long>())
+        stamp = (time_t)(row["date"].as<long long>() / 1000);
+    if (stamp <= 0) stamp = nsParseIsoUtc(row["created_at"] | "");
+    if (stamp <= 0) stamp = nsParseIsoUtc(row["openaps"]["iob"]["timestamp"] | "");
+    const time_t now = time(nullptr);
+    if (stamp > 1700000000 && now > 1700000000 && (now - stamp) > 20 * 60) {
+        Serial.println("NS pump stare, skryvam");
+        diaPumpClear(slot);
+        return;
+    }
+
+    DiaPumpStatus p;
+    bool ok = false;
+    JsonObject openaps = row["openaps"];
+    JsonObject loop = row["loop"];
+    float iob = nsNum(openaps["iob"]["iob"], &ok);
+    if (!ok) iob = nsNum(loop["iob"]["iob"], &ok);
+    if (!ok) iob = nsNum(openaps["suggested"]["IOB"], &ok);
+    if (ok) {
+        p.hasIob = true;
+        p.iob = iob;
+    }
+    ok = false;
+    float cob = nsNum(openaps["suggested"]["COB"], &ok);
+    if (!ok) cob = nsNum(loop["cob"]["cob"], &ok);
+    if (ok && cob >= 0) {
+        p.hasCob = true;
+        p.cob = cob;
+    }
+    ok = false;
+    float rate = nsNum(openaps["enacted"]["rate"], &ok);
+    if (ok && rate >= 0 && rate < 50) {
+        p.hasBasal = true;
+        p.basal = rate;
+    }
+    ok = false;
+    float res = nsNum(row["pump"]["reservoir"], &ok);
+    if (ok && res >= 0 && res < 500) {
+        p.hasReservoir = true;
+        p.reservoir = res;
+    }
+    JsonVariant batt = row["pump"]["battery"];
+    int pct = -1;
+    if (batt.is<int>() || batt.is<float>()) pct = batt.as<int>();
+    else if (batt["percent"].is<int>() || batt["percent"].is<float>()) pct = batt["percent"].as<int>();
+    if (pct >= 0 && pct <= 100) p.batteryPct = pct;
+
+    p.valid = p.hasIob || p.hasCob || p.hasBasal;
+    if (!p.valid) {
+        diaPumpClear(slot);
+        Serial.println("NS pump bez poli");
+        return;
+    }
+    slotPump[slot] = p;
+    Serial.printf("NS pump iob=%d cob=%d basal=%d\n", (int)p.hasIob, (int)p.hasCob, (int)p.hasBasal);
+}
+
 void fetchNightscout() {
     if (nsUrl.length() == 0) {
         markFetchError(FetchError::Config);
@@ -828,17 +1002,17 @@ void fetchNightscout() {
 
     const int histCount = DIA_HISTORY_MAX;
 
-    String requestUrl = nsUrl;
-    requestUrl.trim();
-    while (requestUrl.endsWith("/") && requestUrl.length() > 8)
-        requestUrl.remove(requestUrl.length() - 1);
+    String base = nsUrl;
+    base.trim();
+    while (base.endsWith("/") && base.length() > 8)
+        base.remove(base.length() - 1);
     {
-        String lower = requestUrl;
+        String lower = base;
         lower.toLowerCase();
-        if (requestUrl.length() && !lower.startsWith("http://") && !lower.startsWith("https://"))
-            requestUrl = String("https://") + requestUrl;
+        if (base.length() && !lower.startsWith("http://") && !lower.startsWith("https://"))
+            base = String("https://") + base;
     }
-    requestUrl += "/api/v1/entries.json?count=" + String(histCount);
+    String requestUrl = base + "/api/v1/entries.json?count=" + String(histCount);
     // Overené: ?token= (access token aj moderný raw API_SECRET)
     if (nsToken.length() > 0) requestUrl += "&token=" + nsToken;
 
@@ -859,6 +1033,7 @@ void fetchNightscout() {
 
     int httpCode = -1;
     String payload;
+    bool usedInsecure = tls_insecure;
     // 0,1 = podľa tls_insecure; pri zlyhaní TLS ešte jeden pokus setInsecure (self-signed NS)
     for (int pass = 0; pass < 2; pass++) {
         const bool insecure = (pass == 0) ? tls_insecure : true;
@@ -880,7 +1055,10 @@ void fetchNightscout() {
             }
             if (apiSecretHdr[0]) http.addHeader("api-secret", apiSecretHdr);
             httpCode = http.GET();
-            if (httpCode > 0) payload = http.getString();
+            if (httpCode > 0) {
+                payload = http.getString();
+                usedInsecure = insecure;
+            }
             http.end();
             if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
                 break;
@@ -924,8 +1102,22 @@ void fetchNightscout() {
                     }
                     if (histN > 0) glucoseHistorySetNewestFirst(hist, histN);
 
+                    // Najprv číslo na display – pump TLS nesmie zdržiavať čerstvú glykémiu
                     applyGlucoseReading(mgdl_to_mmol(sgv_mgdl), getTrendSymbol(direction),
                                        (long)(ns_date_ms / 1000), hasSrcDelta, srcDeltaMmol);
+
+                    // IOB max ~raz za 90 s (stačí; inak predĺži celý fetch cyklus)
+                    static uint32_t s_nsPumpAt[2] = {0, 0};
+                    const int slot = diaFetchCurrentSlot();
+                    const uint32_t nowMs = millis();
+                    const bool pumpDue = show_pump && slot >= 0 && slot < 2 &&
+                                         (s_nsPumpAt[slot] == 0 ||
+                                          (nowMs - s_nsPumpAt[slot]) >= 90000UL);
+                    if (pumpDue && !diaFetchAborted()) {
+                        nsFetchPump(base, apiSecretHdr, usedInsecure);
+                        if (slot >= 0 && slot < 2) s_nsPumpAt[slot] = nowMs;
+                        s_nsPumpUiSlot = slot;
+                    }
                 }
             } else {
                 markFetchError(FetchError::Empty);
@@ -946,6 +1138,7 @@ void fetchGlucoseData() {
         markFetchError(FetchError::Wifi);
         return;
     }
+    if (dsSource != "nightscout") diaPumpClear(diaFetchCurrentSlot());
     if (dsSource == "nightscout") {
         fetchNightscout();
     } else if (dsSource == "libre") {
@@ -1103,9 +1296,6 @@ void diaFetchPoll() {
     s_pending.kind = FetchPendingKind::None;
     portEXIT_CRITICAL(&s_fetchMux);
 
-    if (local.kind == FetchPendingKind::None) return;
-
-    // Dáta už sú v slotReadings (enqueue) – tu len LVGL + globals pre shown
     if (local.kind == FetchPendingKind::Success) {
         diaUiUpdateSlotFace(local.slot);
     } else if (local.kind == FetchPendingKind::Error) {
@@ -1114,6 +1304,13 @@ void diaFetchPoll() {
             last_fetch_error = local.err;
         }
         diaUiUpdateSlotFace(local.slot);
+    }
+
+    const int pumpSlot = s_nsPumpUiSlot;
+    if (pumpSlot >= 0 && pumpSlot < 2) {
+        s_nsPumpUiSlot = -1;
+        // Glykémia už mohla prejsť cez Success; IOB dorazí o chvíľu neskôr
+        diaUiUpdateSlotFace(pumpSlot);
     }
 }
 

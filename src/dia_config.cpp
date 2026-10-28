@@ -71,6 +71,7 @@ int night_start_hour = 22;
 bool use_mgdl = false;
 bool show_delta = true;
 bool show_source = false;
+bool show_pump = true;
 bool show_glow = true;
 uint8_t orient_mode = 0; // 0=USB vpravo, 1=USB vľavo
 bool tls_insecure = false;
@@ -225,6 +226,15 @@ int diaProfileActiveCount() {
         if (diaProfileActive(i)) n++;
     }
     return n;
+}
+
+bool diaAnyNightscout() {
+    for (int i = 0; i < DIA_PROFILE_COUNT; i++) {
+        if (!diaProfileActive(i)) continue;
+        const String &s = profiles[i].dsSource;
+        if (s == "nightscout" || s == "ns") return true;
+    }
+    return false;
 }
 
 static String k(int slot, const char *suf) {
@@ -386,8 +396,10 @@ void diaConfigLoad() {
     }
 
     single_slot = preferences.getUChar("face_slot", 0) == 1 ? 1 : 0;
+    show_pump = preferences.isKey("show_pump") ? preferences.getBool("show_pump", true) : true;
     watchface_style = preferences.getInt("wf_style", 0);
-    if (watchface_style < 0 || watchface_style > 2) watchface_style = 0;
+    if (watchface_style < 0 || watchface_style > 3) watchface_style = 0;
+    if (watchface_style == 3 && (!show_pump || !diaAnyNightscout())) watchface_style = 0;
     day_brightness = preferences.getInt("day_br", 255);
     night_brightness = preferences.getInt("night_br", 25);
     day_start_hour = preferences.getInt("day_h", 7);

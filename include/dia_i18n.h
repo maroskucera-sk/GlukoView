@@ -109,6 +109,9 @@ enum class Str : uint16_t {
     PortalNoPwd,
     SourceOn,
     SourceOff,
+    /** Nightscout IOB/COB/basal na ciferníku / v dual riadku. */
+    PumpOn,
+    PumpOff,
     OtaFound,
     PortalDexcom,
     PortalDexcomHint,

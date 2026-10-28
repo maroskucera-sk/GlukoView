@@ -52,6 +52,8 @@ bool diaBoardTouchRead(int16_t *x, int16_t *y) {
     return true;
 }
 
+bool diaBoardTouchOk() { return true; }
+
 bool diaBoardIsRound() { return true; }
 
 const char *diaBoardName() { return "WS-1.28"; }
@@ -65,6 +67,7 @@ void diaBoardPresentLand(const uint16_t *land) { (void)land; }
 bool diaBoardIsLandscape() { return false; }
 
 bool diaBoardHasAudio() { return false; }
+int diaBoardI2sMclkPin() { return -1; }
 
 void diaBoardSpeakerAmp(bool enable) { (void)enable; }
 

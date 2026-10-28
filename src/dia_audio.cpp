@@ -72,16 +72,18 @@ void diaAudioResetChimeTimer() {
 #include "audio_startup_wav.h"
 #include "audio_beep_wav.h"
 
-// Waveshare 3.5B: IO16=DSDIN, IO14=ASDOUT, IO13=SCLK, IO15=LRCK, IO44=MCLK, EXIO7=PA
+// Waveshare 3.5/3.5B: IO16=DSDIN, IO14=ASDOUT, IO13=SCLK, IO15=LRCK, EXIO7=PA
+// MCLK: 3.5 ST7796 = GPIO12; 3.5B AXS = GPIO44 (GPIO12 = QSPI CS)
 static constexpr int kSampleRate = 16000;
 static constexpr int kMclkHz = kSampleRate * 256;
 static constexpr i2s_port_t kI2sPort = I2S_NUM_0;
 
-static constexpr int kPinMclk = 44;
 static constexpr int kPinBclk = 13;
 static constexpr int kPinWs = 15;
 static constexpr int kPinDout = 16;
 static constexpr int kPinDin = 14;
+
+static int pinMclk() { return diaBoardI2sMclkPin(); }
 
 static bool s_i2sReady = false;
 static bool s_codecOk = false;
@@ -157,8 +159,14 @@ static void dumpEs() {
 static bool i2sInit(bool largeDma) {
     if (s_i2sReady) return true;
 
+    const int mclk = pinMclk();
+    if (mclk < 0) {
+        ALOG("MCLK pin invalid");
+        return false;
+    }
+
     uart_set_pin(UART_NUM_0, 43, 46, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    gpio_reset_pin((gpio_num_t)kPinMclk);
+    gpio_reset_pin((gpio_num_t)mclk);
     gpio_reset_pin((gpio_num_t)kPinBclk);
     gpio_reset_pin((gpio_num_t)kPinWs);
     gpio_reset_pin((gpio_num_t)kPinDout);
@@ -189,7 +197,7 @@ static bool i2sInit(bool largeDma) {
     }
 
     i2s_pin_config_t pins = {};
-    pins.mck_io_num = kPinMclk;
+    pins.mck_io_num = mclk;
     pins.bck_io_num = kPinBclk;
     pins.ws_io_num = kPinWs;
     pins.data_out_num = kPinDout;
@@ -223,19 +231,19 @@ static bool i2sInit(bool largeDma) {
     driveI2sPin(kPinWs, I2S0O_WS_OUT_IDX);
     driveI2sPin(kPinDout, I2S0O_SD_OUT_IDX);
 
-    gpio_set_direction((gpio_num_t)kPinMclk, GPIO_MODE_INPUT_OUTPUT);
-    auto probeSel = [](int sel) -> int {
+    gpio_set_direction((gpio_num_t)mclk, GPIO_MODE_INPUT_OUTPUT);
+    auto probeSel = [mclk](int sel) -> int {
         I2S0.rx_clkm_conf.mclk_sel = sel;
-        gpio_matrix_out(kPinMclk, I2S0_MCLK_OUT_IDX, false, false);
-        GPIO.func_out_sel_cfg[kPinMclk].oen_sel = 1;
-        gpio_ll_output_enable(&GPIO, (gpio_num_t)kPinMclk);
-        return probePinFlips(kPinMclk, 40000);
+        gpio_matrix_out(mclk, I2S0_MCLK_OUT_IDX, false, false);
+        GPIO.func_out_sel_cfg[mclk].oen_sel = 1;
+        gpio_ll_output_enable(&GPIO, (gpio_num_t)mclk);
+        return probePinFlips(mclk, 40000);
     };
     int flipsTx = probeSel(0);
     int flipsRx = probeSel(1);
     I2S0.rx_clkm_conf.mclk_sel = (flipsTx > 1000) ? 0 : 1;
-    driveI2sPin(kPinMclk, I2S0_MCLK_OUT_IDX);
-    ALOG("MCLK tx=%d rx=%d bclk=%d ws=%d", flipsTx, flipsRx,
+    driveI2sPin(mclk, I2S0_MCLK_OUT_IDX);
+    ALOG("MCLK pin=%d tx=%d rx=%d bclk=%d ws=%d", mclk, flipsTx, flipsRx,
          probePinFlips(kPinBclk, 20000), probePinFlips(kPinWs, 20000));
 
     int32_t z[32] = {};
@@ -305,14 +313,17 @@ static bool es8311InitWithClocks() {
 }
 
 static void releaseI2sRfPins() {
-    // Odpojiť hodiny z GPIO – MCLK@44 inak ruší WiFi na 3.5B
-    gpio_matrix_out(kPinMclk, 0x100, false, false);
+    // Odpojiť hodiny z GPIO – MCLK inak ruší WiFi (hlavne 3.5B @44)
+    const int mclk = pinMclk();
+    if (mclk >= 0) gpio_matrix_out(mclk, 0x100, false, false);
     gpio_matrix_out(kPinBclk, 0x100, false, false);
     gpio_matrix_out(kPinWs, 0x100, false, false);
     gpio_matrix_out(kPinDout, 0x100, false, false);
-    gpio_set_direction((gpio_num_t)kPinMclk, GPIO_MODE_INPUT);
+    if (mclk >= 0) {
+        gpio_set_direction((gpio_num_t)mclk, GPIO_MODE_INPUT);
+        gpio_set_pull_mode((gpio_num_t)mclk, GPIO_FLOATING);
+    }
     gpio_set_direction((gpio_num_t)kPinBclk, GPIO_MODE_INPUT);
-    gpio_set_pull_mode((gpio_num_t)kPinMclk, GPIO_FLOATING);
     gpio_set_pull_mode((gpio_num_t)kPinBclk, GPIO_FLOATING);
 }
 
@@ -325,6 +336,7 @@ static int codecVolume() {
 }
 
 static void prepareCodecPlay(int volume) {
+    const int mclk = pinMclk();
     if (s_i2sReady) {
         I2S0.tx_clkm_conf.clk_en = 1;
         I2S0.tx_clkm_conf.tx_clk_active = 1;
@@ -335,11 +347,11 @@ static void prepareCodecPlay(int volume) {
     gpio_set_direction((gpio_num_t)kPinDout, GPIO_MODE_INPUT_OUTPUT);
     gpio_set_direction((gpio_num_t)kPinBclk, GPIO_MODE_INPUT_OUTPUT);
     gpio_set_direction((gpio_num_t)kPinWs, GPIO_MODE_INPUT_OUTPUT);
-    gpio_set_direction((gpio_num_t)kPinMclk, GPIO_MODE_INPUT_OUTPUT);
+    if (mclk >= 0) gpio_set_direction((gpio_num_t)mclk, GPIO_MODE_INPUT_OUTPUT);
     driveI2sPin(kPinBclk, I2S0O_BCK_OUT_IDX);
     driveI2sPin(kPinWs, I2S0O_WS_OUT_IDX);
     driveI2sPin(kPinDout, I2S0O_SD_OUT_IDX);
-    driveI2sPin(kPinMclk, I2S0_MCLK_OUT_IDX);
+    if (mclk >= 0) driveI2sPin(mclk, I2S0_MCLK_OUT_IDX);
     if (s_es) {
         es8311_voice_mute(s_es, true);
         // Po I2S re-inite (quiesce) znova sync sample rate – inak znie „vysoko“
@@ -512,6 +524,9 @@ void diaAudioInit() {
     if (s_codecOk && s_i2sReady) return;
     ALOG("init…");
 
+    // Po QSPI/touch resete občas treba Wire znova (inak falošný NACK).
+    Wire.begin(8, 7);
+    Wire.setClock(400000);
     Wire.beginTransmission(0x18);
     if (Wire.endTransmission() != 0) {
         ALOG("ES8311 NACK @0x18");

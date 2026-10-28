@@ -1,5 +1,6 @@
 #include "dia_portal.h"
 #include "dia_wifi.h"
+#include "dia_board.h"
 #include "dia_carelink.h"
 #include "dia_config.h"
 #include "dia_fetch.h"
@@ -58,8 +59,15 @@ static void handleCarelinkPage() {
         page += F("<p class=ok>");
         page += S(Str::ClTokensOk);
         page += F("</p>");
+        // Default: Guardian slot (ak A=NS a B=CL → B). Inak by sa pacient uložil na A.
         int slot = 0;
-        if (wm.server->hasArg("slot")) slot = wm.server->arg("slot").toInt() == 1 ? 1 : 0;
+        if (wm.server->hasArg("slot")) {
+            slot = wm.server->arg("slot").toInt() == 1 ? 1 : 0;
+        } else if (!diaBoardIsRound() && display_mode >= 2) {
+            const bool aCl = profiles[0].dsSource.equalsIgnoreCase("guardian");
+            const bool bCl = profiles[1].dsSource.equalsIgnoreCase("guardian");
+            if (!aCl && bCl) slot = 1;
+        }
         String list, err;
         if (carelinkFetchPatientList(slot, list, err)) {
             page += F("<div class=box><h2>");
@@ -185,14 +193,38 @@ static void handleCarelinkPatient() {
         wm.server->send(200, "text/html; charset=utf-8", page);
         return;
     }
+    {
+        String cur = profiles[slot].dsSource;
+        cur.trim();
+        cur.toLowerCase();
+        // NS/Libre/Dexcom slot nesmie dostať CareLink pacienta (inak obe strany = Guardian B)
+        if (cur.length() && cur != "off" && cur != "guardian") {
+            page += F("<p class=err>Užívateľ ");
+            page += (slot == 1) ? F("B") : F("A");
+            page += F(" má zdroj <b>");
+            page += profiles[slot].dsSource;
+            page += F("</b>. CareLink pacient sem nepatrí – vyber druhého užívateľa "
+                      "alebo v Parametroch zmeň zdroj na Guardian.</p><p><a href=/carelink?slot=");
+            page += String(slot == 0 ? 1 : 0);
+            page += F(">");
+            page += S(Str::Back);
+            page += F("</a> · <a href=/param?all=1>");
+            page += S(Str::PortalBtnParams);
+            page += F("</a></p>");
+            diaPortalAppendLegalNote(page);
+            page += F("</body></html>");
+            wm.server->send(200, "text/html; charset=utf-8", page);
+            return;
+        }
+        profiles[slot].dsSource = "guardian";
+    }
     profiles[slot].carelink_patient_pref = pat;
-    profiles[slot].dsSource = "guardian";
-    // Meno z CareLink zoznamu (id\tmeno) – hneď na ciferník, bez čakania na fetch
+    // CareLink display meno len ak portálové pole ešte nie je vyplnené
+    String display = pat;
     {
         String list = profiles[slot].carelink_patient_list;
         if (list.length() == 0 && slot == 1 && !carelinkSlotOwnsTokens(1))
             list = profiles[0].carelink_patient_list;
-        String display = pat;
         int from = 0;
         while (from < (int)list.length()) {
             int nl = list.indexOf('\n', from);
@@ -208,7 +240,7 @@ static void handleCarelinkPatient() {
             from = nl + 1;
         }
         if (display.length() > 24) display.remove(24);
-        profiles[slot].name = display;
+        if (profiles[slot].name.length() == 0) profiles[slot].name = display;
     }
     if (slot == 0) {
         carelink_patient_pref = pat;
@@ -218,13 +250,14 @@ static void handleCarelinkPatient() {
     snprintf(key, sizeof(key), "p%d_cpf", slot);
     preferences.putString(key, pat);
     diaConfigSaveProfiles();
+    diaWifiSyncWmFromProfiles();
     forceFetch = true;
     diaUiApplyDisplayMode();
     page += F("<p class=ok>");
     page += S(Str::ClPatientSaved);
     page += (slot == 1) ? F("B") : F("A");
     page += F("): <b>");
-    page += profiles[slot].name;
+    page += profiles[slot].name.length() ? profiles[slot].name : display;
     page += F("</b></p>"
               "<a class=btn href=/carelink?slot=");
     page += String(slot);
@@ -316,14 +349,27 @@ static void handleCarelinkFinish() {
               "color:#fff;border-radius:8px;text-decoration:none}</style></head><body><h1>CareLink</h1>");
     if (ok) {
         const int tokSlot = carelinkPendingTokenSlot();
-        profiles[tokSlot].dsSource = "guardian";
-        profiles[tokSlot].carelink_patient_pref = "";
-        if (tokSlot == 0) {
-            if (dia_active_slot == 0) dsSource = "guardian";
-            carelink_patient_pref = "";
-            preferences.putString("cl_pref", "");
+        // Tokeny môžu žiť na A aj keď A=Nightscout a B=Guardian (1 konto).
+        // Nikdy neprepíš NS/Libre/Dexcom → guardian len kvôli uloženiu tokenov.
+        {
+            String cur = profiles[tokSlot].dsSource;
+            cur.trim();
+            cur.toLowerCase();
+            if (cur.length() == 0 || cur == "off" || cur == "guardian") {
+                profiles[tokSlot].dsSource = "guardian";
+                profiles[tokSlot].carelink_patient_pref = "";
+                if (tokSlot == 0) {
+                    if (dia_active_slot == 0) dsSource = "guardian";
+                    carelink_patient_pref = "";
+                    preferences.putString("cl_pref", "");
+                }
+            } else {
+                Serial.printf("[carelink] tokeny slot=%d, zdroj %s nemenim\n",
+                              tokSlot, profiles[tokSlot].dsSource.c_str());
+            }
         }
         diaConfigSaveProfiles();
+        diaWifiSyncWmFromProfiles();
         forceFetch = true;
         page += F("<p class=ok>");
         page += S(Str::ClDoneTokens);

@@ -103,6 +103,10 @@ void loop() {
     lv_tick_inc(currentMillis - lastTickMillis);
     lastTickMillis = currentMillis;
     lv_timer_handler();
+#if defined(DIA_BOARD_WS_3_5)
+    // ST7796 partial SPI: druhý pass = touch medzi flush pásmi
+    lv_timer_handler();
+#endif
 
     diaWifiMaintain(currentMillis);
     {
@@ -167,5 +171,9 @@ void loop() {
         updateClockDisplay();
     }
 
+#if defined(DIA_BOARD_WS_3_5)
+    delay(1);
+#else
     delay(5);
+#endif
 }

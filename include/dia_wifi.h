@@ -43,3 +43,5 @@ void diaWifiSavePortalConfigIfNeeded();
 void diaWifiMaintain(uint32_t currentMillis);
 /** True = na displeji má ostať IP návod, fetch ešte nespúšťať. */
 bool diaWifiNeedsSetupHint();
+/** Po CareLink/NVS zmenách – WM buffery musia sedieť s profiles[] (inak /param ukáže starý Libre…). */
+void diaWifiSyncWmFromProfiles();
