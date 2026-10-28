@@ -68,9 +68,9 @@ async function restartSolo(transport) {
   try { await raceMs(port.close(), 1500); } catch { /* port sa zatvorí odpojením */ }
 }
 
-// Široká doska ide cez vstavané USB-JTAG, nie cez CH343. Knižničné after()
-// volá len RTS a na Windows dosku nechá v nahrávaní, takže svieti len podsvietenie.
-// Obe linky idú v jednom príkaze a prechod ide cez (1,1), nie cez (0,0).
+// Široká doska ide cez vstavané USB-JTAG. Postup so striedaním DTR ju
+// nechá v nahrávaní, program sa nespustí a podsvietenie ostane zhasnuté.
+// Stačí podržať reset a pustiť ho s GPIO0 hore, rovnako ako USB nahrávanie.
 async function restartDuo(transport) {
   const port = transport.device;
   if (transport.reader) {
@@ -80,14 +80,8 @@ async function restartDuo(transport) {
   }
   const both = (dtr, rts) => port.setSignals({ dataTerminalReady: dtr, requestToSend: rts });
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  await both(false, false);
-  await wait(100);
-  await both(true, false);
-  await wait(100);
-  await both(true, true);
-  await wait(20);
   await both(false, true);
-  await wait(100);
+  await wait(200);
   await both(false, false);
   await wait(200);
   try { await raceMs(port.close(), 1500); } catch { /* port sa zatvorí odpojením */ }
