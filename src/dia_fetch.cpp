@@ -990,6 +990,28 @@ static void nsFetchPump(const String &base, const char *apiSecretHdr, bool tlsIn
     Serial.printf("NS pump iob=%d cob=%d basal=%d\n", (int)p.hasIob, (int)p.hasCob, (int)p.hasBasal);
 }
 
+/** Epoch ms z NS riadku: date (ms/s) alebo dateString. */
+static long long nsEntryDateMs(JsonObject row) {
+    long long ms = 0;
+    if (row["date"].is<long long>() || row["date"].is<long>() || row["date"].is<double>())
+        ms = row["date"].as<long long>();
+    // Niektoré uploadery dávajú sekundy namiesto ms
+    if (ms > 0 && ms < 100000000000LL) ms *= 1000LL;
+    if (ms > 0) return ms;
+    const time_t iso = nsParseIsoUtc(row["dateString"] | "");
+    return (iso > 0) ? ((long long)iso * 1000LL) : 0;
+}
+
+static float nsEntrySgvMgdl(JsonObject row) {
+    float v = 0;
+    if (row["sgv"].is<float>() || row["sgv"].is<int>() || row["sgv"].is<double>())
+        v = row["sgv"].as<float>();
+    if (v <= 0.0f &&
+        (row["glucose"].is<float>() || row["glucose"].is<int>() || row["glucose"].is<double>()))
+        v = row["glucose"].as<float>();
+    return v;
+}
+
 void fetchNightscout() {
     if (nsUrl.length() == 0) {
         markFetchError(FetchError::Config);
@@ -1012,10 +1034,6 @@ void fetchNightscout() {
         if (base.length() && !lower.startsWith("http://") && !lower.startsWith("https://"))
             base = String("https://") + base;
     }
-    String requestUrl = base + "/api/v1/entries.json?count=" + String(histCount);
-    // Overené: ?token= (access token aj moderný raw API_SECRET)
-    if (nsToken.length() > 0) requestUrl += "&token=" + nsToken;
-
     // Classic API_SECRET: rovnaká hodnota aj ako SHA1 v api-secret (NS akceptuje plain aj hash)
     char apiSecretHdr[41] = "";
     if (nsToken.length() > 0) {
@@ -1027,80 +1045,157 @@ void fetchNightscout() {
         }
     }
 
+    auto nsBuildEntriesUrl = [&](bool typed) {
+        String u = base + "/api/v1/entries.json?count=" + String(histCount);
+        // find[type]=sgv: bez kalibrácií/MBG (Gluroo môže filter ignorovať/odmietnuť → fallback nižšie)
+        if (typed) u += "&find%5Btype%5D=sgv";
+        if (nsToken.length() > 0) {
+            u += "&token=";
+            u += nsToken; // NS token je zvyčajne [A-Za-z0-9._-]
+        }
+        return u;
+    };
+
     diaFetchLogHeap("ns-pre");
-    Serial.printf("NS GET url_len=%u secret_len=%u tls_insecure=%d\n",
-                  (unsigned)requestUrl.length(), (unsigned)nsToken.length(), (int)tls_insecure);
 
     int httpCode = -1;
     String payload;
     bool usedInsecure = tls_insecure;
-    // 0,1 = podľa tls_insecure; pri zlyhaní TLS ešte jeden pokus setInsecure (self-signed NS)
-    for (int pass = 0; pass < 2; pass++) {
-        const bool insecure = (pass == 0) ? tls_insecure : true;
-        if (pass > 0) {
-            if (httpCode > 0 || tls_insecure) break; // už sme insecure, alebo HTTP odpoveď prišla
-            Serial.println("NS TLS zlyhal – retry setInsecure");
-            diaFetchBreathe(400);
-        }
-        for (int attempt = 0; attempt < 2; attempt++) {
-            if (diaFetchAborted()) break;
-            if (attempt > 0) diaFetchBreathe(400);
-            WiFiClientSecure client;
-            configureTlsClient(client, insecure);
-            HTTPClient http;
-            http.setTimeout(12000);
-            if (!http.begin(client, requestUrl)) {
-                httpCode = -1;
-                continue;
+    auto nsHttpGet = [&](const String &requestUrl) {
+        httpCode = -1;
+        payload = "";
+        Serial.printf("NS GET url_len=%u secret_len=%u tls_insecure=%d\n",
+                      (unsigned)requestUrl.length(), (unsigned)nsToken.length(), (int)tls_insecure);
+        for (int pass = 0; pass < 2; pass++) {
+            const bool insecure = (pass == 0) ? tls_insecure : true;
+            if (pass > 0) {
+                if (httpCode > 0 || tls_insecure) break;
+                Serial.println("NS TLS zlyhal – retry setInsecure");
+                diaFetchBreathe(400);
             }
-            if (apiSecretHdr[0]) http.addHeader("api-secret", apiSecretHdr);
-            httpCode = http.GET();
-            if (httpCode > 0) {
-                payload = http.getString();
-                usedInsecure = insecure;
+            for (int attempt = 0; attempt < 2; attempt++) {
+                if (diaFetchAborted()) break;
+                if (attempt > 0) diaFetchBreathe(400);
+                WiFiClientSecure client;
+                configureTlsClient(client, insecure);
+                HTTPClient http;
+                http.setTimeout(12000);
+                if (!http.begin(client, requestUrl)) {
+                    httpCode = -1;
+                    continue;
+                }
+                if (apiSecretHdr[0]) http.addHeader("api-secret", apiSecretHdr);
+                httpCode = http.GET();
+                if (httpCode > 0) {
+                    payload = http.getString();
+                    usedInsecure = insecure;
+                }
+                http.end();
+                if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
+                    break;
+                Serial.printf("NS HTTP %d (pass %d pokus %d/2)\n", httpCode, pass, attempt + 1);
             }
-            http.end();
-            if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
-                break;
-            Serial.printf("NS HTTP %d (pass %d pokus %d/2)\n", httpCode, pass, attempt + 1);
+            if (httpCode > 0) break;
         }
-        if (httpCode > 0) break;
+        Serial.printf("NS → HTTP %d payload_len=%u\n", httpCode, (unsigned)payload.length());
+    };
+
+    nsHttpGet(nsBuildEntriesUrl(true));
+    // Prázdne pole pri 200: skús bez find[type] (niektoré Gluroo/proxy)
+    if (httpCode == HTTP_CODE_OK && (payload == "[]" || payload.length() < 3)) {
+        Serial.println("NS typed empty – retry bez find[type]");
+        nsHttpGet(nsBuildEntriesUrl(false));
     }
-    Serial.printf("NS → HTTP %d payload_len=%u\n", httpCode, (unsigned)payload.length());
 
     if (httpCode > 0) {
         if (httpCode == HTTP_CODE_OK) {
+            // Filter: menší heap než plný entries JSON (36× veľké objekty na Solo často NoMemory)
+            JsonDocument filter;
+            {
+                JsonObject f0 = filter.add<JsonObject>();
+                f0["sgv"] = true;
+                f0["glucose"] = true;
+                f0["direction"] = true;
+                f0["date"] = true;
+                f0["dateString"] = true;
+                f0["type"] = true;
+            }
             JsonDocument doc;
-            DeserializationError error = deserializeJson(doc, payload);
+            DeserializationError error =
+                deserializeJson(doc, payload, DeserializationOption::Filter(filter));
             payload = "";
 
-            if (!error && doc.size() > 0) {
-                float sgv_mgdl = doc[0]["sgv"].as<float>();
-                if (sgv_mgdl <= 0.0f) {
+            if (error) {
+                Serial.printf("NS JSON %s\n", error.c_str());
+                markFetchError(FetchError::Empty);
+            } else if (!doc.is<JsonArray>() || doc.as<JsonArray>().size() == 0) {
+                markFetchError(FetchError::Empty);
+            } else {
+                JsonArray arr = doc.as<JsonArray>();
+                // Vždy najnovší podľa date – [0] nie je spoľahlivé (asc/desc, Gluroo, proxy)
+                int bestIdx = -1;
+                long long bestMs = -1;
+                for (size_t i = 0; i < arr.size(); i++) {
+                    JsonObject row = arr[i].as<JsonObject>();
+                    if (row.isNull()) continue;
+                    const char *typ = row["type"] | "sgv";
+                    if (typ[0] && strcmp(typ, "sgv") != 0 && strcmp(typ, "glucose") != 0)
+                        continue;
+                    float v = nsEntrySgvMgdl(row);
+                    if (v <= 0.0f) continue;
+                    long long ms = nsEntryDateMs(row);
+                    if (bestIdx < 0 || ms > bestMs) {
+                        bestIdx = (int)i;
+                        bestMs = ms;
+                    }
+                }
+
+                if (bestIdx < 0) {
                     markFetchError(FetchError::Empty);
                 } else {
-                    String direction = doc[0]["direction"].as<String>();
-                    long long ns_date_ms = doc[0]["date"].as<long long>();
+                    JsonObject newest = arr[(size_t)bestIdx].as<JsonObject>();
+                    float sgv_mgdl = nsEntrySgvMgdl(newest);
+                    String direction = newest["direction"] | "";
+                    long long ns_date_ms = bestMs > 0 ? bestMs : nsEntryDateMs(newest);
+
+                    // História: zoradiť podľa date desc (newest first), nie podľa poradia API
+                    struct NsHistItem {
+                        long long ms;
+                        float mmol;
+                    };
+                    NsHistItem items[DIA_HISTORY_MAX];
+                    int nItems = 0;
+                    for (size_t i = 0; i < arr.size() && nItems < DIA_HISTORY_MAX; i++) {
+                        JsonObject row = arr[i].as<JsonObject>();
+                        float v = nsEntrySgvMgdl(row);
+                        if (v <= 0.0f) continue;
+                        items[nItems].ms = nsEntryDateMs(row);
+                        items[nItems].mmol = mgdl_to_mmol(v);
+                        nItems++;
+                    }
+                    for (int i = 0; i < nItems; i++) {
+                        for (int j = i + 1; j < nItems; j++) {
+                            if (items[j].ms > items[i].ms) {
+                                NsHistItem tmp = items[i];
+                                items[i] = items[j];
+                                items[j] = tmp;
+                            }
+                        }
+                    }
+                    float hist[DIA_HISTORY_MAX];
+                    int histN = 0;
+                    for (int i = 0; i < nItems; i++) hist[histN++] = items[i].mmol;
+                    if (histN > 0) glucoseHistorySetNewestFirst(hist, histN);
 
                     bool hasSrcDelta = false;
                     float srcDeltaMmol = 0.0f;
-                    if (doc.size() >= 2) {
-                        float prev_mgdl = doc[1]["sgv"].as<float>();
-                        if (prev_mgdl > 0.0f) {
-                            srcDeltaMmol = mgdl_to_mmol(sgv_mgdl) - mgdl_to_mmol(prev_mgdl);
-                            hasSrcDelta = true;
-                        }
+                    if (histN >= 2) {
+                        srcDeltaMmol = hist[0] - hist[1];
+                        hasSrcDelta = true;
                     }
 
-                    float hist[DIA_HISTORY_MAX];
-                    int histN = 0;
-                    size_t nDocs = doc.size();
-                    if (nDocs > DIA_HISTORY_MAX) nDocs = DIA_HISTORY_MAX;
-                    for (size_t i = 0; i < nDocs; i++) {
-                        float v = doc[i]["sgv"].as<float>();
-                        if (v > 0.0f) hist[histN++] = mgdl_to_mmol(v);
-                    }
-                    if (histN > 0) glucoseHistorySetNewestFirst(hist, histN);
+                    Serial.printf("NS ok sgv=%.0f idx=%d/%u ts_ms=%lld\n", sgv_mgdl, bestIdx,
+                                  (unsigned)arr.size(), (long long)ns_date_ms);
 
                     // Najprv číslo na display – pump TLS nesmie zdržiavať čerstvú glykémiu
                     applyGlucoseReading(mgdl_to_mmol(sgv_mgdl), getTrendSymbol(direction),
@@ -1119,8 +1214,6 @@ void fetchNightscout() {
                         s_nsPumpUiSlot = slot;
                     }
                 }
-            } else {
-                markFetchError(FetchError::Empty);
             }
         } else if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403) {
             markFetchError(FetchError::Auth);
