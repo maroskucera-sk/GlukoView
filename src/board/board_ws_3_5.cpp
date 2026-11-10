@@ -55,6 +55,7 @@ static XPowersPMU pmu;
 static bool touch_ok = false;
 static bool gfx_ok = false;
 static bool tca_ok = false;
+static bool pmu_ok = false;
 static uint8_t touch_addr = TOUCH_ADDR_FT;
 static bool touch_ft = true;
 static bool panel_st7796 = true;
@@ -121,7 +122,10 @@ static void initPmu() {
     pmu.enableDLDO2();
     pmu.enableCPUSLDO();
     pmu.disableTSPinMeasure();
+    pmu.enableBattDetection();
+    pmu.enableBattVoltageMeasure();
     delay(50);
+    pmu_ok = true;
     logFlush("[board] AXP2101 rails ON");
 }
 
@@ -440,6 +444,62 @@ void diaBoardSetOrientMode(uint8_t mode) {
     s_orientMode = mode ? 1 : 0;
     s_flip = (s_orientMode == 1);
     applySt7796Rotation();
+}
+
+static bool s_battPowerSave35 = false;
+
+bool diaBoardBattPowerSave() { return s_battPowerSave35; }
+
+void diaBoardBattRead(DiaBattView *out) {
+    static DiaBattView cached = {};
+    static uint32_t lastMs = 0;
+    static uint8_t bars = 0;
+    static bool haveBars = false;
+    static bool loggedAbsent = false;
+    static bool sawCharge = false;
+
+    const uint32_t now = millis();
+    if (lastMs != 0 && (uint32_t)(now - lastMs) < 10000) {
+        if (out) *out = cached;
+        return;
+    }
+    lastMs = now;
+
+    DiaBattView v = {};
+    int mv = 0;
+    if (pmu_ok && pmu.isBatteryConnect()) {
+        mv = (int)pmu.getBattVoltage();
+        if (mv >= 2800 && mv < 4800) {
+            v.present = true;
+            bars = diaBattBarsStable(bars, haveBars, mv);
+            haveBars = true;
+            v.bars = bars;
+            v.charging = pmu.isCharging();
+            if (v.charging) {
+                sawCharge = true;
+                s_battPowerSave35 = false;
+            } else if (sawCharge && mv < 4100) {
+                s_battPowerSave35 = true;
+            }
+            if (v.charging || mv <= 4040) s_battPowerSave35 = false;
+        }
+    }
+    if (!v.present) {
+        haveBars = false;
+        bars = 0;
+        sawCharge = false;
+        s_battPowerSave35 = false;
+        if (!loggedAbsent) {
+            esp_rom_printf("[batt] ziadna (%d mV)\n", mv);
+            loggedAbsent = true;
+        }
+    } else if (loggedAbsent || v.bars != cached.bars || v.charging != cached.charging) {
+        loggedAbsent = false;
+        esp_rom_printf("[batt] %d mV bars=%u chg=%d save=%d\n", mv, v.bars,
+                       v.charging ? 1 : 0, s_battPowerSave35 ? 1 : 0);
+    }
+    cached = v;
+    if (out) *out = v;
 }
 
 #endif // DIA_BOARD_WS_3_5

@@ -169,6 +169,7 @@ void loop() {
     if (currentMillis - lastTimeUpdate > 1000) {
         lastTimeUpdate = currentMillis;
         updateClockDisplay();
+        diaUiUpdateBattery();
     }
 
 #if defined(DIA_BOARD_WS_3_5)

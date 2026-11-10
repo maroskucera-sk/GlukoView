@@ -55,33 +55,40 @@ static void handleCarelinkPage() {
     page += F("<h1>");
     page += S(Str::ClTitle);
     page += F("</h1>");
+    // ?slot= z sprievodcu. Bez neho pri dual, ak je Guardian len B, neukladať pacienta na A.
+    int slot = 0;
+    if (wm.server->hasArg("slot")) {
+        slot = wm.server->arg("slot").toInt() == 1 ? 1 : 0;
+    } else if (!diaBoardIsRound() && display_mode >= 2) {
+        const bool aCl = profiles[0].dsSource.equalsIgnoreCase("guardian");
+        const bool bCl = profiles[1].dsSource.equalsIgnoreCase("guardian");
+        if (!aCl && bCl) slot = 1;
+    }
+    const bool showSlotPick = !diaBoardIsRound() && display_mode >= 2;
+    const bool autoGo = wm.server->hasArg("go");
+
     if (ready) {
         page += F("<p class=ok>");
         page += S(Str::ClTokensOk);
         page += F("</p>");
-        // Default: Guardian slot (ak A=NS a B=CL → B). Inak by sa pacient uložil na A.
-        int slot = 0;
-        if (wm.server->hasArg("slot")) {
-            slot = wm.server->arg("slot").toInt() == 1 ? 1 : 0;
-        } else if (!diaBoardIsRound() && display_mode >= 2) {
-            const bool aCl = profiles[0].dsSource.equalsIgnoreCase("guardian");
-            const bool bCl = profiles[1].dsSource.equalsIgnoreCase("guardian");
-            if (!aCl && bCl) slot = 1;
-        }
         String list, err;
         if (carelinkFetchPatientList(slot, list, err)) {
             page += F("<div class=box><h2>");
             page += S(Str::ClPickPatient);
-            page += F("</h2><form method=GET action=/carelink><label>");
-            page += S(Str::ClForUser);
-            page += F("</label><select name=slot onchange=\"this.form.submit()\">"
-                      "<option value=0");
-            if (slot == 0) page += F(" selected");
-            page += F(">A</option><option value=1");
-            if (slot == 1) page += F(" selected");
-            page += F(">B</option></select></form><p class=muted>");
-            page += S(Str::ClSharedHint);
-            page += F("</p><form method=POST action=/carelink/patient>"
+            page += F("</h2>");
+            if (showSlotPick) {
+                page += F("<form method=GET action=/carelink><label>");
+                page += S(Str::ClForUser);
+                page += F("</label><select name=slot onchange=\"this.form.submit()\">"
+                          "<option value=0");
+                if (slot == 0) page += F(" selected");
+                page += F(">A</option><option value=1");
+                if (slot == 1) page += F(" selected");
+                page += F(">B</option></select></form><p class=muted>");
+                page += S(Str::ClSharedHint);
+                page += F("</p>");
+            }
+            page += F("<form method=POST action=/carelink/patient>"
                       "<input type=hidden name=slot value=\"");
             page += String(slot);
             page += F("\">");
@@ -112,7 +119,7 @@ static void handleCarelinkPage() {
             }
             page += F("<button type=submit>");
             page += S(Str::ClSavePatient);
-            page += (slot == 1) ? F("B") : F("A");
+            if (showSlotPick) page += (slot == 1) ? F("B") : F("A");
             page += F("</button></form></div>");
             if (n == 0) {
                 page += F("<p class=err>");
@@ -128,6 +135,8 @@ static void handleCarelinkPage() {
     } else {
         page += F("<p class=warn>");
         page += S(Str::ClTokensMissing);
+        page += F("</p><p class=muted>");
+        page += S(Str::ClFollowerHint);
         page += F("</p>");
     }
     if (pending) {
@@ -135,33 +144,101 @@ static void handleCarelinkPage() {
         page += S(Str::ClPendingCode);
         page += F("</p>");
     }
-    page += F("<div class=box><h2>");
-    page += S(Str::ClHowTitle);
-    page += F("</h2><ol>");
-    page += S(Str::ClHowHtml);
-    page += F("</ol><p class=muted>");
-    page += S(Str::ClFollowerHint);
-    page += F("</p></div><div class=box><form method=POST action=/carelink/start><label>");
-    page += S(Str::ClRegion);
-    page += F("</label><select name=region><option value=EU selected>");
-    page += S(Str::ClRegionEu);
-    page += F("</option><option value=US>");
-    page += S(Str::ClRegionUs);
-    page += F("</option></select><label>");
-    page += S(Str::ClSaveFor);
-    page += F("</label><select name=slot><option value=0 selected>");
-    page += S(Str::ClSlotA);
-    page += F("</option><option value=1>");
-    page += S(Str::ClSlotB);
-    page += F("</option></select><button type=submit>");
-    page += S(Str::ClBtnStart);
-    page += F("</button></form></div><div class=box><form method=POST action=/carelink/finish><label>");
-    page += S(Str::ClCbLabel);
-    page += F("</label><textarea name=cb placeholder=\"com.medtronic.carepartner:/sso?code=...\"></textarea>"
-              "<button type=submit>");
-    page += S(Str::ClBtnFinish);
-    page += F("</button></form></div>"
-              "<a class=\"btn btn-sec\" href=/>");
+
+    // Prihlásenie hneď hore (bez scrollovania cez návod)
+    if (!ready || pending) {
+        page += F("<div class=box><form id=clstart method=POST action=/carelink/start target=_blank>");
+        page += F("<label>");
+        page += S(Str::ClRegion);
+        page += F("</label><select name=region><option value=EU selected>");
+        page += S(Str::ClRegionEu);
+        page += F("</option><option value=US>");
+        page += S(Str::ClRegionUs);
+        page += F("</option></select>");
+        if (showSlotPick) {
+            page += F("<label>");
+            page += S(Str::ClSaveFor);
+            page += F("</label><select name=slot><option value=0");
+            if (slot == 0) page += F(" selected");
+            page += F(">");
+            page += S(Str::ClSlotA);
+            page += F("</option><option value=1");
+            if (slot == 1) page += F(" selected");
+            page += F(">");
+            page += S(Str::ClSlotB);
+            page += F("</option></select>");
+        } else {
+            page += F("<input type=hidden name=slot value=\"");
+            page += String(slot);
+            page += F("\">");
+        }
+        page += F("<button class=btn-cl type=submit>");
+        page += S(Str::ClBtnStart);
+        page += F("</button><p class=muted>");
+        page += S(Str::ClAfterLoginHint);
+        page += F("</p></form></div>");
+
+        page += F("<div class=box><form method=POST action=/carelink/finish><label>");
+        page += S(Str::ClCbLabel);
+        page += F("</label><textarea name=cb autofocus "
+                  "placeholder=\"com.medtronic.carepartner:/sso?code=...\"></textarea>"
+                  "<button type=submit>");
+        page += S(Str::ClBtnFinish);
+        page += F("</button></form></div>");
+
+        if (autoGo && !ready) {
+            // Jeden ťuk z Parametrov/sprievodcu → hneď otvor CareLink login
+            page += F("<script>setTimeout(function(){var f=document.getElementById('clstart');"
+                      "if(f)f.submit();},80);</script>");
+        }
+
+        page += F("<details class=box><summary style=\"cursor:pointer;font-weight:600\">");
+        page += S(Str::ClHowTitle);
+        page += F("</summary><ol>");
+        page += S(Str::ClHowHtml);
+        page += F("</ol></details>");
+    } else {
+        // Tokeny OK – znova prihlásiť len v rozbalení
+        page += F("<details class=box><summary style=\"cursor:pointer;font-weight:600\">");
+        page += S(Str::ClBtnStart);
+        page += F("</summary><form method=POST action=/carelink/start target=_blank>");
+        page += F("<label>");
+        page += S(Str::ClRegion);
+        page += F("</label><select name=region><option value=EU selected>");
+        page += S(Str::ClRegionEu);
+        page += F("</option><option value=US>");
+        page += S(Str::ClRegionUs);
+        page += F("</option></select>");
+        if (showSlotPick) {
+            page += F("<label>");
+            page += S(Str::ClSaveFor);
+            page += F("</label><select name=slot><option value=0");
+            if (slot == 0) page += F(" selected");
+            page += F(">");
+            page += S(Str::ClSlotA);
+            page += F("</option><option value=1");
+            if (slot == 1) page += F(" selected");
+            page += F(">");
+            page += S(Str::ClSlotB);
+            page += F("</option></select>");
+        } else {
+            page += F("<input type=hidden name=slot value=\"");
+            page += String(slot);
+            page += F("\">");
+        }
+        page += F("<button type=submit>");
+        page += S(Str::ClBtnStart);
+        page += F("</button></form>"
+                  "<form method=POST action=/carelink/finish style=\"margin-top:12px\"><label>");
+        page += S(Str::ClCbLabel);
+        page += F("</label><textarea name=cb "
+                  "placeholder=\"com.medtronic.carepartner:/sso?code=...\"></textarea>"
+                  "<button type=submit>");
+        page += S(Str::ClBtnFinish);
+        page += F("</button></form></details>");
+    }
+
+    page += F("<a class=\"btn btn-sec\" href=/>");
     page += S(Str::ClHome);
     page += F("</a><a class=\"btn btn-sec\" href=/param?all=1>");
     page += S(Str::PortalBtnParams);
@@ -251,8 +328,11 @@ static void handleCarelinkPatient() {
     preferences.putString(key, pat);
     diaConfigSaveProfiles();
     diaWifiSyncWmFromProfiles();
+    // Bez tohto ostane na displeji „otvor IP…“ aj keď už CareLink beží
+    preferences.putUChar("wiz", 255);
     forceFetch = true;
     diaUiApplyDisplayMode();
+    diaWifiOnSourceConfigured();
     page += F("<p class=ok>");
     page += S(Str::ClPatientSaved);
     page += (slot == 1) ? F("B") : F("A");
@@ -295,42 +375,21 @@ static void handleCarelinkStart() {
         return;
     }
 
-    String href = authUrl;
-    href.replace("&", "&amp;");
+    // Nová karta (target=_blank) ide rovno na CareLink. Pôvodná stránka s poľom ostáva.
+    String htmlUrl = authUrl;
+    htmlUrl.replace("&", "&amp;");
+    htmlUrl.replace("\"", "&quot;");
+    String jsUrl = authUrl;
+    jsUrl.replace("\\", "\\\\");
+    jsUrl.replace("\"", "\\\"");
     String page;
-    page.reserve(2400);
-    page += F(
-        "<!DOCTYPE html><html><head><meta charset=UTF-8>"
-        "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-        "<title>CareLink login</title><style>"
-        "body{font-family:system-ui;margin:14px;background:#0b0f14;color:#eee;line-height:1.45}"
-        ".box{background:#151c26;padding:14px;border-radius:10px;margin:12px 0}"
-        "a.btn{display:block;padding:14px;background:#1fa3ec;color:#fff;border-radius:10px;"
-        "text-align:center;text-decoration:none;font-size:16px;margin:10px 0}"
-        "textarea{width:100%;min-height:90px;box-sizing:border-box;padding:10px;border-radius:8px;"
-        "border:1px solid #334;background:#0e141c;color:#eee}"
-        "button{width:100%;padding:14px;background:#2ecc71;color:#fff;border:0;border-radius:10px;font-size:16px}"
-        "a{color:#8cf}.muted{color:#99a;font-size:0.92rem}"
-        "</style></head><body><h1>");
-    page += S(Str::ClStep1Done);
-    page += F("</h1><div class=box><p>");
-    page += S(Str::ClOpenLogin);
-    page += F("</p><a class=btn href=\"");
-    page += href;
-    page += F("\">");
-    page += S(Str::ClOpenBtn);
-    page += F("</a><p class=muted>");
-    page += S(Str::ClAfterLoginHint);
-    page += F("</p></div><div class=box><form method=POST action=/carelink/finish><label>");
-    page += S(Str::ClPasteLabel);
-    page += F("</label><textarea name=cb></textarea>"
-              "<button type=submit style=\"margin-top:10px\">");
-    page += S(Str::ClBtnFinish);
-    page += F("</button></form></div><p><a href=/carelink>");
-    page += S(Str::Back);
-    page += F("</a></p>");
-    diaPortalAppendLegalNote(page);
-    page += F("</body></html>");
+    page.reserve(htmlUrl.length() + jsUrl.length() + 160);
+    page += F("<!DOCTYPE html><html><head><meta charset=UTF-8>"
+              "<meta http-equiv=refresh content=\"0;url=");
+    page += htmlUrl;
+    page += F("\"><script>location.replace(\"");
+    page += jsUrl;
+    page += F("\")</script></head><body></body></html>");
     wm.server->send(200, "text/html; charset=utf-8", page);
 }
 
@@ -370,19 +429,14 @@ static void handleCarelinkFinish() {
         }
         diaConfigSaveProfiles();
         diaWifiSyncWmFromProfiles();
+        // CareLink mimo wizardu by inak nechal wiz!=255 → žiadny fetch, len IP na displeji
+        preferences.putUChar("wiz", 255);
         forceFetch = true;
-        page += F("<p class=ok>");
-        page += S(Str::ClDoneTokens);
-        page += (tokSlot == 1) ? F("B") : F("A");
-        page += F(".</p><a class=btn href=/carelink?slot=");
-        page += String(tokSlot);
-        page += F(">");
-        page += S(Str::ClPickPatientBtn);
-        page += F("</a><a class=btn style=background:#243040 href=/>");
-        page += S(Str::ClHome);
-        page += F("</a><a class=btn style=background:#243040 href=/param?all=1>");
-        page += S(Str::PortalBtnParams);
-        page += F("</a>");
+        // Tokeny stačia na SourceReady – odomkni ciferník (pacienta ešte môže doplniť)
+        diaWifiOnSourceConfigured();
+        wm.server->sendHeader("Location", String("/carelink?slot=") + (tokSlot == 1 ? "1" : "0"));
+        wm.server->send(302, "text/plain", "");
+        return;
     } else {
         page += F("<p class=err>");
         page += err;

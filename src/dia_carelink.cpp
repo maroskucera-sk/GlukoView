@@ -2,6 +2,7 @@
 #include "dia_carelink_store.h"
 #include "dia_config.h"
 #include "dia_diag.h"
+#include "dia_fetch.h"
 #include "dia_glucose.h"
 #include "dia_secret.h"
 #include "dia_tls.h"
@@ -32,7 +33,9 @@ static CarelinkPsramAllocator s_clPsramAlloc;
 /** Buffer v RAM parsovať po kúskoch, inak IDLE(CPU0) nestihne a TASK_WDT reštartuje. */
 class DiaYieldBuf : public Stream {
 public:
-    DiaYieldBuf(const char *data, size_t len) : _p(data), _n(len) {}
+    DiaYieldBuf(const char *data, size_t len) : _p(data), _n(len) {
+        setTimeout(50); // pamäťový buffer – žiadne čakanie na ďalšie bajty
+    }
     int available() override { return (_i < _n) ? (int)(_n - _i) : 0; }
     int read() override {
         if (_i >= _n) return -1;
@@ -41,12 +44,68 @@ public:
     }
     int peek() override { return (_i < _n) ? (uint8_t)_p[_i] : -1; }
     size_t write(uint8_t) override { return 0; }
+    size_t readBytes(char *buffer, size_t length) override {
+        size_t n = 0;
+        while (n < length && _i < _n) {
+            if ((_i & 0x3FF) == 0) vTaskDelay(1);
+            buffer[n++] = _p[_i++];
+        }
+        return n;
+    }
 
 private:
     const char *_p;
     size_t _n;
     size_t _i = 0;
 };
+
+/** Celé HTTP telo do PSRAM – HTTP/1.0 + Content-Length, inak TLS pri slabom WiFi uviazne
+ *  na polovičnom JSON → IncompleteInput → UI drží starú glykémiu. */
+static size_t carelinkReadHttpBody(HTTPClient &http, WiFiClient &stream, char *buf, size_t cap,
+                                   uint32_t timeoutMs) {
+    if (!buf || cap < 2) return 0;
+    const int contentLen = http.getSize(); // -1 = chunked / neznáme
+    size_t len = 0;
+    const uint32_t t0 = millis();
+    uint32_t lastDataMs = t0;
+    stream.setTimeout(100);
+
+    while (len < cap - 1 && (millis() - t0) < timeoutMs) {
+        if (contentLen > 0 && (int)len >= contentLen) break;
+
+        int av = stream.available();
+        if (av <= 0) {
+            const bool gotAll = contentLen > 0 && (int)len >= contentLen;
+            if (gotAll) break;
+            // Neznáma dĺžka: po krátkej pauze bez dát považuj za hotové (HTTP/1.0)
+            if (contentLen < 0 && len > 64 && (millis() - lastDataMs) > 800UL) break;
+            if (!http.connected() && stream.available() <= 0) {
+                // TLS ešte môže doraziť posledný record
+                if ((millis() - lastDataMs) > 400UL) break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        size_t room = cap - 1 - len;
+        size_t want = (size_t)av < room ? (size_t)av : room;
+        if (contentLen > 0) {
+            size_t left = (size_t)contentLen - len;
+            if (want > left) want = left;
+        }
+        int rd = stream.readBytes(buf + len, want);
+        if (rd <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        len += (size_t)rd;
+        lastDataMs = millis();
+        if ((len & 0xFFF) == 0) vTaskDelay(1);
+    }
+    buf[len] = '\0';
+    esp_rom_printf("[carelink] body %u B (clen=%d)\n", (unsigned)len, contentLen);
+    return len;
+}
 
 /** Veľký CareLink stream bez yield → IDLE(CPU0) nestihne → TASK_WDT → reboot. */
 class DiaYieldStream : public Stream {
@@ -738,6 +797,14 @@ bool carelinkCompleteBrowserLogin(const String &callbackOrCodeOrJson, String &er
     s_loginRedirect = "";
     s_loginState = "";
     Serial.printf("[carelink] browser login OK – tokeny ulozene slot=%d\n", s_loginTokenSlot);
+    // Hneď discovery (bez súbehu s fetch TLS) – inak portál hlási „endpointy zlyhali“
+    diaFetchQuiesce(8000);
+    const bool discOk = discoverEndpoints();
+    diaFetchResume();
+    if (!discOk) {
+        Serial.println("[carelink] login OK, ale discovery este zlyhalo – skus obnovit /carelink");
+        esp_rom_printf("[carelink] login discover fail\n");
+    }
     return true;
 }
 
@@ -896,9 +963,15 @@ static bool clGetJson(const String &url, JsonDocument &doc, int &code, bool with
     WiFiClientSecure client;
     configureTlsClient(client, true); // CareLink cert chain sa mení; čítame len s tokenom
     HTTPClient http;
-    http.setTimeout(15000);
+    http.setTimeout(20000);
+    http.setReuse(false);
+    // HTTP/1.0: bez chunked – inak discovery JSON (~20 kB) na ESP často IncompleteInput
+    http.useHTTP10(true);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    if (!http.begin(client, url)) return false;
+    if (!http.begin(client, url)) {
+        esp_rom_printf("[carelink] GET begin fail\n");
+        return false;
+    }
     if (withAuth) addClHeaders(http, false);
     else {
         http.addHeader("Accept", "application/json");
@@ -908,7 +981,13 @@ static bool clGetJson(const String &url, JsonDocument &doc, int &code, bool with
     bool ok = false;
     if (code == HTTP_CODE_OK) {
         DiaYieldStream ystream(http.getStream());
-        ok = deserializeJson(doc, ystream) == DeserializationError::Ok;
+        ystream.setTimeout(15000);
+        DeserializationError err = deserializeJson(doc, ystream);
+        ok = (err == DeserializationError::Ok);
+        if (!ok) {
+            Serial.printf("[carelink] GET JSON %s %s\n", err.c_str(), url.c_str());
+            esp_rom_printf("[carelink] GET JSON %s\n", err.c_str());
+        }
     } else {
         if (code == 401 || code == 403) s_lastHttpHtml = carelinkBodyIsHtml(carelinkReadSnippet(http));
         Serial.printf("[carelink] GET %d %s\n", code, url.c_str());
@@ -940,7 +1019,7 @@ void carelinkForgetEndpoints() {
     clTokenUrl = "";
 }
 
-static bool discoverEndpoints() {
+static bool discoverEndpointsOnce() {
     diaDiagStep(dia_active_slot, DiaDiagStep::Discover);
     carelinkRestoreTokenUrl();
     if (clBaseCare.length() > 0 && clBaseCumulus.length() > 0 && clTokenUrl.length() > 0) return true;
@@ -952,7 +1031,10 @@ static bool discoverEndpoints() {
     JsonDocument disc;
     int code = 0;
     // Bez Bearer: po USB reconnecte access často expirovaný a 401 by zabilo discovery
-    if (!clGetJson(CARELINK_DISCOVERY, disc, code, false)) return false;
+    if (!clGetJson(CARELINK_DISCOVERY, disc, code, false)) {
+        esp_rom_printf("[carelink] discover GET fail HTTP %d\n", code);
+        return false;
+    }
 
     String region;
     for (JsonObject c : disc["supportedCountries"].as<JsonArray>()) {
@@ -987,20 +1069,51 @@ static bool discoverEndpoints() {
         if (strlen(key) > 0) ssoUrl = c[key] | "";
         break;
     }
-    if (clBaseCare.length() == 0 || clBaseCumulus.length() == 0 || ssoUrl.length() == 0) return false;
+    if (clBaseCare.length() == 0 || clBaseCumulus.length() == 0 || ssoUrl.length() == 0) {
+        esp_rom_printf("[carelink] discover CP incomplete reg=%s\n", region.c_str());
+        clBaseCare = "";
+        clBaseCumulus = "";
+        return false;
+    }
 
     JsonDocument sso;
-    if (!clGetJson(ssoUrl, sso, code, false)) return false;
+    if (!clGetJson(ssoUrl, sso, code, false)) {
+        esp_rom_printf("[carelink] SSO GET fail HTTP %d\n", code);
+        clBaseCare = "";
+        clBaseCumulus = "";
+        return false;
+    }
     const char *host = sso["server"]["hostname"] | "";
     int port = sso["server"]["port"] | 443;
     String prefix = sso["server"]["prefix"] | "";
     const char *tokenPath = sso["system_endpoints"]["token_endpoint_path"] | "";
-    if (strlen(host) == 0 || strlen(tokenPath) == 0) return false;
+    if (strlen(host) == 0 || strlen(tokenPath) == 0) {
+        esp_rom_printf("[carelink] SSO missing host/tokenPath\n");
+        clBaseCare = "";
+        clBaseCumulus = "";
+        return false;
+    }
     clTokenUrl = carelinkAuthBase(host, port, prefix) + tokenPath;
     carelinkPersistTokenUrl();
     esp_rom_printf("[carelink] token url ok\n");
     Serial.printf("[carelink] region %s user %s\n", region.c_str(), clUsername.c_str());
     return true;
+}
+
+static bool discoverEndpoints() {
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+            esp_rom_printf("[carelink] discover retry %d\n", attempt);
+            vTaskDelay(pdMS_TO_TICKS(400 + attempt * 300));
+            // Pred retry zruš polovičný stav v RAM (NVS restore skúsi znova)
+            if (clTokenUrl.length() == 0) {
+                clBaseCare = "";
+                clBaseCumulus = "";
+            }
+        }
+        if (discoverEndpointsOnce()) return true;
+    }
+    return false;
 }
 
 // Auth0: druhe odoslanie toho isteho refresh tokenu zrusi celu relaciu.
@@ -1456,16 +1569,18 @@ static bool readGlucose(bool &authFail) {
     DeserializationError err = DeserializationError::Ok;
     JsonDocument doc(&s_clPsramAlloc);
     bool got = false;
-    for (int attempt = 0; attempt < 2 && !got; attempt++) {
+    for (int attempt = 0; attempt < 3 && !got; attempt++) {
         if (attempt > 0) {
             esp_rom_printf("[carelink] data retry %d\n", attempt);
-            vTaskDelay(pdMS_TO_TICKS(600));
+            vTaskDelay(pdMS_TO_TICKS(800 + attempt * 400));
         }
         WiFiClientSecure client;
         configureTlsClient(client, true);
         HTTPClient http;
-        http.setTimeout(20000);
+        http.setTimeout(30000);
         http.setReuse(false);
+        // HTTP/1.0 → bez chunked encoding (getStream inak vracia surové chunky / trunc)
+        http.useHTTP10(true);
         if (!http.begin(client, url)) {
             esp_rom_printf("[carelink] data begin fail\n");
             continue;
@@ -1498,26 +1613,26 @@ static bool readGlucose(bool &authFail) {
             continue;
         }
         WiFiClient &stream = http.getStream();
-        size_t len = 0;
-        const uint32_t t0 = millis();
-        while (len < kBodyCap - 1 && (millis() - t0) < 25000UL) {
-            int av = stream.available();
-            if (av <= 0) {
-                if (!http.connected()) break;
-                vTaskDelay(pdMS_TO_TICKS(5));
-                continue;
-            }
-            while (av-- > 0 && len < kBodyCap - 1) {
-                int ch = stream.read();
-                if (ch < 0) break;
-                bodyBuf[len++] = (char)ch;
-                if ((len & 0x3FF) == 0) vTaskDelay(1);
-            }
-        }
-        bodyBuf[len] = '\0';
+        const int contentLen = http.getSize();
+        size_t len = carelinkReadHttpBody(http, stream, bodyBuf, kBodyCap, 35000UL);
         http.end();
-        esp_rom_printf("[carelink] body %u B\n", (unsigned)len);
         if (len < 32) continue;
+        if (contentLen > 0 && (int)len < contentLen) {
+            Serial.printf("[carelink] body kratke %u/%d\n", (unsigned)len, contentLen);
+            esp_rom_printf("[carelink] short body %u/%d\n", (unsigned)len, contentLen);
+            continue;
+        }
+        // Truncate marker: JSON musí začínať '{' a typicky končiť '}'
+        while (len > 0 && (bodyBuf[len - 1] == '\0' || bodyBuf[len - 1] == '\r' ||
+                           bodyBuf[len - 1] == '\n' || bodyBuf[len - 1] == ' ')) {
+            bodyBuf[--len] = '\0';
+        }
+        if (bodyBuf[0] != '{' || bodyBuf[len - 1] != '}') {
+            Serial.printf("[carelink] body nie je kompletny JSON (len=%u head=%.8s)\n",
+                          (unsigned)len, bodyBuf);
+            esp_rom_printf("[carelink] bad json framing len=%u\n", (unsigned)len);
+            continue;
+        }
         doc.clear();
         {
             DiaYieldBuf ybuf(bodyBuf, len);
@@ -1582,7 +1697,13 @@ static bool readGlucose(bool &authFail) {
         glucoseHistoryPush(mmol);
     }
 
-    Serial.printf("[carelink] sg=%.0f mmol=%.1f trend=%s\n", sg, mmol, trend);
+    {
+        time_t now = time(nullptr);
+        long ageMin = (now > 1700000000 && ts > 0 && now >= ts) ? (long)((now - ts) / 60) : -1;
+        Serial.printf("[carelink] sg=%.0f mmol=%.1f trend=%s ts=%ld age=%ld min\n",
+                      sg, mmol, trend, ts, ageMin);
+        esp_rom_printf("[carelink] sg ok age=%ld\n", ageMin);
+    }
     applyGlucoseReading(mmol, getTrendSymbol(carelinkTrendToDirection(trend)), ts);
     return true;
 }
@@ -1600,8 +1721,12 @@ bool carelinkFetchPatientList(int slot, String &listOut, String &errOut) {
         errOut = "Access token nie je platný JWT.";
         return false;
     }
-    if (!discoverEndpoints()) {
-        errOut = "Discovery / endpointy zlyhali.";
+    // Discovery + TLS naraz s fetchom často padá (chunked JSON / handshake)
+    diaFetchQuiesce(8000);
+    const bool discOk = discoverEndpoints();
+    diaFetchResume();
+    if (!discOk) {
+        errOut = "Discovery / endpointy zlyhali. Obnov stránku alebo skús znova.";
         return false;
     }
     JsonDocument me;

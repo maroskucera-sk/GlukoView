@@ -73,6 +73,7 @@ bool show_delta = true;
 bool show_source = false;
 bool show_pump = true;
 bool show_glow = true;
+bool show_batt = false;
 uint8_t orient_mode = 0; // 0=USB vpravo, 1=USB vľavo
 bool tls_insecure = false;
 bool auto_update = true;
@@ -409,6 +410,7 @@ void diaConfigLoad() {
     show_delta = preferences.isKey("show_delta") ? preferences.getBool("show_delta", true) : true;
     show_source = preferences.isKey("show_src") ? preferences.getBool("show_src", false) : false;
     show_glow = preferences.isKey("show_glow") ? preferences.getBool("show_glow", true) : true;
+    show_batt = preferences.getBool("show_batt", false);
     {
         uint8_t raw = preferences.isKey("orient") ? preferences.getUChar("orient", 0) : 0;
         if (!preferences.isKey("orient_v2")) {

@@ -26,6 +26,8 @@ uint32_t calculate_dynamic_color(float mmol);
 void refresh_critical_and_color();
 
 void saveGlucoseCache();
+/** Zápis cache do NVS. Volá sa len z hlavnej slučky, nie z fetch tasku. */
+void glucosePersistSlotCache(int slot);
 void loadGlucoseCache();
 
 /** História pre sparkline: index 0 = najstarší, count-1 = najnovší (mmol/L). */

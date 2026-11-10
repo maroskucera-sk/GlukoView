@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GlukoView — LibreLink, Dexcom a Guardian</title>
+  <style>
+    body { margin: 0; font: 17px/1.55 "Segoe UI", sans-serif; background: #0e141b; color: #e8eef4; }
+    main { max-width: 40rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    h1 { font-size: 1.8rem; line-height: 1.25; margin: 0 0 0.75rem; }
+    h2 { font-size: 1.25rem; margin: 2rem 0 0.6rem; }
+    a { color: #8fd0ff; }
+    .note { color: #9aabba; }
+    ol { padding-left: 1.25rem; }
+    li { margin: 0.35rem 0; }
+    figure { margin: 1.25rem 0 0.25rem; }
+    img { width: min(420px, 100%); height: auto; border-radius: 16px; display: block; }
+    figcaption { color: #9aabba; font-size: 0.92rem; margin-top: 0.45rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <!-- Text na web. Na blog použi clanok.html. Ked dopises vetu, dopis ju v oboch suboroch. -->
+    <h1>GlukoView — LibreLink, Dexcom a Guardian</h1>
+    <p>GlukoView je len informatívny displej. Nie je zdravotnícka pomôcka. Dávku inzulínu a rozhodnutie o liečbe rob vždy v aplikácii od výrobcu senzora.</p>
+    <!-- SEM DOPLN: uvod, komu je displej urceny -->
+    <p>Nastavenie je v prehliadači telefónu, nie na displeji.</p>
+
+    <h2>Ako otvoriť nastavenie</h2>
+    <ol>
+      <li>Telefón aj displej musia byť na tej istej WiFi.</li>
+      <li>Na displeji otvor <strong>Informácie</strong>. Je tam IP adresa, napríklad 192.168.1.50.</li>
+      <li>Tú adresu napíš do Chrome alebo Safari.</li>
+      <li>Ťukni <strong>Parametre a zdroje</strong>. Pri prvom spustení ťa prevedie <strong>Sprievodca nastavením</strong>.</li>
+    </ol>
+    <p>Kým displej ešte nemá domácu WiFi: na telefóne sa pripoj na sieť GlukoView, v prehliadači otvor 10.1.1.1, vyber svoju WiFi a zadaj heslo. Potom pokračuj sprievodcom.</p>
+    <p>Kruhový displej ukazuje jedného človeka. Široký vie ukázať dvoch vedľa seba. Pri dvoch ľuďoch sa každý nastaví zvlášť, A a potom B.</p>
+    <!-- SEM DOPLN: prve spustenie, obrazky displeja -->
+
+    <h2>LibreLink</h2>
+    <p>Použi účet z aplikácie <strong>LibreLinkUp</strong>, ten, ktorý daného človeka vidí. Nie je to heslo od snímača.</p>
+    <p>Na Slovensku nechaj región <strong>EU</strong>.</p>
+    <ol>
+      <li>Pri zdroji vyber <strong>Libre LinkUp</strong>.</li>
+      <li>Napíš e-mail a heslo.</li>
+      <li>Ťukni <strong>Uložiť</strong>.</li>
+      <li>Stránka sa obnoví a v poli <strong>Pacient</strong> sa objavia mená. Vyber správne a ulož ešte raz.</li>
+    </ol>
+    <p>Jedno Libre konto a dvaja ľudia: rovnaký e-mail a heslo pri A aj pri B, iné meno v poli Pacient. Dve kontá: pri B iný e-mail a heslo.</p>
+    <p>Keď prihlásenie zlyhá, skontroluj e-mail, heslo a región. Keď zoznam mien ostane prázdny, je to účet, ktorý v LibreLinkUp nikoho nevidí.</p>
+    <!-- SEM DOPLN -->
+    <figure>
+      <img src="obrazky/libre.png" alt="Nastavenie Libre LinkUp: e-mail, heslo, pacient a región EU">
+      <figcaption>Libre LinkUp v nastavení displeja.</figcaption>
+    </figure>
+
+    <h2>Dexcom</h2>
+    <p>Použi prihlásenie z aplikácie <strong>Dexcom u pacienta</strong>. Konto z aplikácie Follow nestačí. V aplikácii Dexcom musí byť zapnuté zdieľanie (Share).</p>
+    <p>Na Slovensku nechaj región <strong>EU / OUS</strong>.</p>
+    <ol>
+      <li>Pri zdroji vyber <strong>Dexcom Share</strong>.</li>
+      <li>Napíš e-mail a heslo.</li>
+      <li>Ťukni <strong>Uložiť</strong>.</li>
+    </ol>
+    <p>Meno pacienta sa tu nevyberá. Displej číta hodnotu z tohto jedného účtu.</p>
+    <!-- SEM DOPLN -->
+    <figure>
+      <img src="obrazky/dexcom.png" alt="Nastavenie Dexcom Share: e-mail, heslo a región EU / OUS">
+      <figcaption>Dexcom Share v nastavení displeja.</figcaption>
+    </figure>
+
+    <h2>Guardian (CareLink)</h2>
+    <p>Použi účet <strong>Care Partner</strong> (nasledovateľ). Nie je to účet pacienta, ktorým sa ovláda pumpa.</p>
+    <p>Na Slovensku nechaj región <strong>EU / Slovensko / Európa</strong>. Pri jednom CareLink konte nechaj <strong>A (hlavné / zdieľané)</strong>.</p>
+    <ol>
+      <li>Pri zdroji vyber <strong>Guardian (CareLink)</strong> a ťukni <strong>Prihlásiť CareLink</strong>.</li>
+      <li>Na stránke CareLink ťukni <strong>Prihlásiť CareLink</strong>. Otvorí sa nová karta. Tú pôvodnú nechaj otvorenú.</li>
+      <li>Prihlás sa a vyrieš captcha.</li>
+      <li>Prehliadač napíše, že nevie otvoriť aplikáciu. <strong>To je v poriadku.</strong> Nič neinštaluj.</li>
+      <li>Skopíruj celý odkaz z adresného riadku. Začína <code>com.medtronic.carepartner</code>.</li>
+      <li>Vráť sa na pôvodnú kartu, odkaz vlož do poľa a ťukni <strong>Uložiť tokeny</strong>.</li>
+      <li>Na tej istej stránke vyber správneho pacienta a ulož ho.</li>
+    </ol>
+    <p>Odkaz platí asi 10 minút. Keď vyprší, začni znova od kroku 2.</p>
+    <p>Jedno CareLink konto a dvaja ľudia: prihlás sa raz a pri A a pri B vyber iného pacienta. Dve CareLink kontá: pri B zopakuj prihlásenie a v poli „Uložiť tokeny pre“ vyber <strong>B</strong>.</p>
+    <!-- SEM DOPLN -->
+    <figure>
+      <img src="obrazky/guardian.png" alt="Jedna stránka CareLink: tlačidlo Prihlásiť CareLink a pole na odkaz">
+      <figcaption>CareLink ostáva na jednej stránke. Prihlásenie sa otvorí v novej karte.</figcaption>
+    </figure>
+  </main>
+</body>
+</html>

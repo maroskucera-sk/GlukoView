@@ -20,6 +20,8 @@ void apply_watchface();
 void updateBrightness();
 void updateClockDisplay();
 void updateAgeDisplay();
+/** Malá ikona článku na okraji ciferníka. Bez batérie sa nekreslí. */
+void diaUiUpdateBattery();
 void updateStaleAndErrorVisuals();
 void updateDeltaLabel();
 void update_target_btn_labels();

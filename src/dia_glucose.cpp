@@ -150,12 +150,19 @@ void refresh_critical_and_color() {
 }
 
 void saveGlucoseCache() {
-    if (!has_valid_reading || last_mmol_value <= 0.0f) return;
-    preferences.putFloat("cache_mmol", last_mmol_value);
-    preferences.putLong("cache_ts", last_reading_timestamp);
-    preferences.putString("cache_tr", last_trend_symbol);
-    preferences.putFloat("cache_dlt", last_delta_mmol);
-    preferences.putBool("cache_hd", has_delta);
+    glucosePersistSlotCache(diaShownSlot());
+}
+
+void glucosePersistSlotCache(int slot) {
+    if (slot < 0 || slot > 1 || slot != diaShownSlot()) return;
+    const DiaSlotReading &s = slotReadings[slot];
+    if (!s.has_valid_reading || s.mmol <= 0.0f) return;
+    preferences.putFloat("cache_mmol", s.mmol);
+    preferences.putLong("cache_ts", s.timestamp);
+    preferences.putString("cache_tr", s.trend);
+    preferences.putFloat("cache_dlt", s.delta_mmol);
+    preferences.putBool("cache_hd", s.has_delta);
+    preferences.putUChar("cache_slot", (uint8_t)slot);
 }
 
 void loadGlucoseCache() {
@@ -279,14 +286,6 @@ void glucoseStoreReadingSlot(int slot, float mmol, const String &trendSymbol, lo
     // Počas defer syncuj globals len pre aktívny fetch slot (A po duali obnoví fetch task)
     if (!diaFetchDeferUi() || slot == diaFetchCurrentSlot()) {
         glucoseSyncGlobalsFromSlot(slot);
-    }
-    if (slot == diaShownSlot() && s.has_valid_reading && s.mmol > 0.0f) {
-        preferences.putFloat("cache_mmol", s.mmol);
-        preferences.putLong("cache_ts", s.timestamp);
-        preferences.putString("cache_tr", s.trend);
-        preferences.putFloat("cache_dlt", s.delta_mmol);
-        preferences.putBool("cache_hd", s.has_delta);
-        preferences.putUChar("cache_slot", (uint8_t)slot);
     }
 }
 

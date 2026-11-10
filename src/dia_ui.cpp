@@ -14,6 +14,7 @@
 #include "dia_wifi.h"
 
 #include <WiFi.h>
+#include <string.h>
 #include <esp_heap_caps.h>
 #include <esp_rom_sys.h>
 #include <math.h>
@@ -44,6 +45,12 @@ lv_obj_t *label_delta;
 lv_obj_t *label_age;
 lv_obj_t *label_status;
 lv_obj_t *label_source = nullptr;
+static lv_obj_t *batt_root = nullptr;
+static lv_obj_t *batt_body = nullptr;
+static lv_obj_t *batt_fill = nullptr;
+static lv_obj_t *batt_tip = nullptr;
+static lv_obj_t *batt_bolt = nullptr;
+static lv_point_t batt_bolt_pts[] = {{11, 0}, {6, 5}, {11, 5}, {5, 9}};
 lv_obj_t *chart_spark = NULL;
 lv_chart_series_t *chart_spark_ser = NULL;
 static lv_color_t *disp_draw_buf2 = nullptr;
@@ -170,6 +177,7 @@ lv_obj_t *lbl_btn_delta;
 lv_obj_t *lbl_btn_source = nullptr;
 lv_obj_t *lbl_btn_pump = nullptr;
 lv_obj_t *lbl_btn_glow = nullptr;
+lv_obj_t *lbl_btn_batt = nullptr;
 lv_obj_t *lbl_btn_orient = nullptr;
 lv_obj_t *lbl_btn_sound = nullptr;
 static lv_obj_t *ui_sound_panel = nullptr;
@@ -193,6 +201,7 @@ static lv_obj_t *lbl_btn_info = nullptr;
 static lv_obj_t *lbl_btn_refresh = nullptr;
 static lv_obj_t *lbl_btn_update = nullptr;
 static lv_obj_t *lbl_btn_forget = nullptr;
+static lv_obj_t *lbl_btn_restart = nullptr;
 static lv_obj_t *lbl_back1 = nullptr;
 static lv_obj_t *lbl_back2 = nullptr;
 static lv_obj_t *lbl_back3 = nullptr;
@@ -270,7 +279,7 @@ static void diaUiFacePassThroughTouches() {
         label_time, label_glycemia, label_trend, label_delta, label_age, label_status,
         label_source, label_pump, label_name0, label_name1, label_glycemia1, label_trend1, label_delta1,
         label_age1, label_source1, arc_bg, chart_spark, chart_spark1, split_line,
-        panel_frame0, panel_frame1,
+        panel_frame0, panel_frame1, batt_root, batt_body, batt_fill, batt_tip, batt_bolt,
     };
     for (lv_obj_t *o : objs) {
         if (o) lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
@@ -308,6 +317,8 @@ static void diaUiRequestManualFetch() {
 static void clearMainOverlays();
 static void diaUiHideSplash();
 static void showInfoValuesLayout();
+static void diaUiRefreshRestartBtn();
+static void diaUiRefreshBattBtn();
 static lv_obj_t *create_menu_btn(lv_obj_t *parent, const char *text, lv_event_cb_t cb, int user_data,
                                  uint32_t color, int btn_w = 0);
 static void diaUiMakeScrollSnappy(lv_obj_t *obj);
@@ -518,6 +529,15 @@ static void diaUiStyleSpark(lv_obj_t *chart, bool withGrid) {
 }
 
 void updateBrightness() {
+    // Po EOC nabíjačky (ETA6096) ide spotreba z článku aj pri USB – stlm jas,
+    // aby napätie stihlo klesnúť na auto-recharge skôr, než BMS odpojí článok.
+    if (diaBoardBattPowerSave()) {
+        uint8_t br = (uint8_t)night_brightness;
+        if (br > 40) br = 40;
+        if (day_brightness < br) br = (uint8_t)day_brightness;
+        diaBoardSetBrightness(br);
+        return;
+    }
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
         diaBoardSetBrightness((uint8_t)day_brightness);
@@ -700,14 +720,28 @@ static void place_face_mid(lv_obj_t *obj, int cx240, int cy240) {
     lv_obj_align(obj, LV_ALIGN_TOP_LEFT, ox + faceX(cx240) - w / 2, oy + faceY(cy240) - h / 2);
 }
 
+static void diaUiSetMenuBtnVisible(lv_obj_t *lbl, bool visible) {
+    if (!lbl) return;
+    lv_obj_t *btn = lv_obj_get_parent(lbl);
+    if (!btn) return;
+    // Skryť celý btn (nie len label) – inak vo flex menu ostane prázdne tlačidlo.
+    if (visible) {
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    } else {
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    }
+}
+
 static void diaUiRefreshPumpBtn() {
     if (!lbl_btn_pump) return;
     const bool ns = diaAnyNightscout();
     if (ns) {
-        lv_obj_clear_flag(lbl_btn_pump, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(lbl_btn_pump, S(show_pump ? Str::PumpOn : Str::PumpOff));
+        diaUiSetMenuBtnVisible(lbl_btn_pump, true);
     } else {
-        lv_obj_add_flag(lbl_btn_pump, LV_OBJ_FLAG_HIDDEN);
+        diaUiSetMenuBtnVisible(lbl_btn_pump, false);
     }
 }
 
@@ -1111,6 +1145,7 @@ void apply_watchface() {
         lv_obj_add_flag(label_source, LV_OBJ_FLAG_HIDDEN);
     updateDeltaLabel();
     diaUiRefreshPumpLabel();
+    diaUiUpdateBattery();
     if (diaUiFaceOverlaysOpen()) diaUiRaiseOverlays();
 }
 
@@ -1172,6 +1207,82 @@ static void clearMainOverlays() {
         lv_obj_add_flag(label_name1, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(label_name1, "");
     }
+    if (batt_root) lv_obj_add_flag(batt_root, LV_OBJ_FLAG_HIDDEN);
+}
+
+void diaUiUpdateBattery() {
+    if (!batt_root) return;
+    DiaBattView v = {};
+    diaBoardBattRead(&v);
+    const char *status = (label_status && lv_label_get_text(label_status)) ? lv_label_get_text(label_status) : "";
+    const bool statusOn = label_status && !lv_obj_has_flag(label_status, LV_OBJ_FLAG_HIDDEN) && status[0] != '\0';
+    diaUiRefreshBattBtn();
+    const bool low = v.present && v.bars <= 1;
+    const bool showIcon = v.present && (show_batt || low);
+    const bool hide = s_bootUiLock || diaUiFaceOverlaysOpen() || !showIcon || statusOn;
+    static bool drawn = false;
+    static bool drawnChg = false;
+    static bool drawnAlways = false;
+    static uint8_t drawnBars = 255;
+    static int drawnFace = -1;
+    if (hide) {
+        if (drawn || !lv_obj_has_flag(batt_root, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(batt_root, LV_OBJ_FLAG_HIDDEN);
+        }
+        drawn = false;
+        drawnAlways = false;
+        drawnBars = 255;
+        drawnFace = -1;
+        return;
+    }
+    if (drawn && drawnChg == v.charging && drawnAlways == show_batt && drawnBars == v.bars &&
+        drawnFace == watchface_style && !lv_obj_has_flag(batt_root, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    // Bokom od stĺpca, nie medzi riadkami. Súradnice sú z rozloženia
+    // čísiel (font 72/48) a prázdneho kruhu vnútri žiary (r < 80).
+    // hero a graf: vľavo od šípky. čas: vľavo od čísla. pumpa: nad časom,
+    // vpravo od Sach. Široká doska: roh mimo kruhu.
+    int battX = 46;
+    int battY = 124;
+    lv_align_t battAlign = LV_ALIGN_TOP_LEFT;
+    if (!diaBoardIsRound()) {
+        battAlign = LV_ALIGN_TOP_RIGHT;
+        battX = -10;
+        battY = 8;
+    } else if (watchface_style == 1) {
+        battX = 42;
+        battY = 117;
+    } else if (watchface_style == 2) {
+        battX = 44;
+        battY = 112;
+    } else if (watchface_style == 3) {
+        battX = 118;
+        battY = 48;
+    }
+    lv_obj_align(batt_root, battAlign, battX, battY);
+    const bool warnOnly = !show_batt;
+    const uint32_t fillHex = (warnOnly || low) ? 0xFF3B30 : (v.bars == 2 ? 0xFFB000 : 0xFFFFFF);
+    const lv_color_t frame = (warnOnly || low) ? lv_color_hex(0xFF3B30) : lv_color_hex(0xFFFFFF);
+    lv_obj_set_style_border_color(batt_body, frame, 0);
+    lv_obj_set_style_bg_color(batt_tip, frame, 0);
+    if (v.bars == 0) {
+        lv_obj_add_flag(batt_fill, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(batt_fill, LV_OBJ_FLAG_HIDDEN);
+        static const int kFillW[5] = {0, 5, 11, 16, 22};
+        lv_obj_set_width(batt_fill, (lv_coord_t)kFillW[v.bars > 4 ? 4 : v.bars]);
+        lv_obj_set_style_bg_color(batt_fill, lv_color_hex((v.charging && !warnOnly) ? 0xFFD000 : fillHex), 0);
+    }
+    if (v.charging) lv_obj_clear_flag(batt_bolt, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(batt_bolt, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(batt_root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(batt_root);
+    drawn = true;
+    drawnChg = v.charging;
+    drawnAlways = show_batt;
+    drawnBars = v.bars;
+    drawnFace = watchface_style;
 }
 
 static bool bootStatusSame(const char *title, const char *detail) {
@@ -1195,6 +1306,39 @@ void showBootStatus(const char *title, const char *detail) {
     // AP callback volá to isté ešte raz uprostred štartu rádia. Druhé kreslenie
     // zhodí posun na začiatok a na chvíľu zamrzne dotyk.
     if (ui_boot_scroll && bootStatusSame(title, detail)) return;
+
+    int breaks = 0;
+    if (detail) {
+        for (const char *p = detail; *p; ++p) {
+            if (*p == '\n') breaks++;
+        }
+    }
+    const bool guide = breaks >= 2;
+    const bool steps = detail && detail[0] >= '0' && detail[0] <= '9' && detail[1] == '.';
+    const bool hasTitle = title && title[0];
+    const bool round = diaBoardIsRound();
+
+    // Rýchla cesta: právny text už sedí, mení sa len WiFi status („Skenujem…“ / SSID).
+    // Bez resetu scrollu a bez prekladania layoutu – inak text skáče a nedá sa čítať.
+    if (!guide && ui_boot_scroll && lbl_boot_legal && label_age && label_glycemia &&
+        s_bootShownTitle[0] != '\0' &&
+        !lv_obj_has_flag(lbl_boot_legal, LV_OBJ_FLAG_HIDDEN)) {
+        bootStatusRemember(title, detail);
+        if (hasTitle) {
+            lv_obj_clear_flag(label_glycemia, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(label_glycemia, title);
+        } else {
+            lv_label_set_text(label_glycemia, "");
+            lv_obj_add_flag(label_glycemia, LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_label_set_text(label_age, detail ? detail : "");
+        lv_obj_set_style_text_align(label_age, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_invalidate(label_age);
+        if (hasTitle) lv_obj_invalidate(label_glycemia);
+        diaUiFlushHandlers(diaBoardPreferFullRefresh() ? 1 : 2, diaBoardPreferFullRefresh() ? 16 : 4);
+        return;
+    }
+
     bootStatusRemember(title, detail);
     // Logo inak zostane nad textom: počas blokujúceho WiFi nebeží loop → timer 2.2 s sa nespustí
     diaUiHideSplash();
@@ -1237,7 +1381,6 @@ void showBootStatus(const char *title, const char *detail) {
     lv_obj_clear_flag(label_glycemia, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(label_age, LV_OBJ_FLAG_HIDDEN);
 
-    const bool hasTitle = title && title[0];
     if (hasTitle) {
         lv_obj_clear_flag(label_glycemia, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(label_glycemia, &font_sk_20, LV_PART_MAIN);
@@ -1248,13 +1391,13 @@ void showBootStatus(const char *title, const char *detail) {
         lv_obj_set_style_text_line_space(label_glycemia, 4, LV_PART_MAIN);
         lv_label_set_text(label_glycemia, title);
         lv_obj_set_parent(label_glycemia, lv_scr_act());
-        lv_obj_align(label_glycemia, LV_ALIGN_TOP_MID, 0, diaBoardIsRound() ? 12 : 28);
+        lv_obj_align(label_glycemia, LV_ALIGN_TOP_MID, 0, round ? 12 : 28);
     } else {
         lv_label_set_text(label_glycemia, "");
         lv_obj_add_flag(label_glycemia, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Scrollovací box pre dlhý AP návod (na kruhu inak odrezaný)
+    // Scrollovací box: pri WiFi len právny text; pri AP návode celý návod
     if (!ui_boot_scroll) {
         ui_boot_scroll = lv_obj_create(lv_scr_act());
         lv_obj_set_style_bg_opa(ui_boot_scroll, LV_OPA_TRANSP, LV_PART_MAIN);
@@ -1262,7 +1405,7 @@ void showBootStatus(const char *title, const char *detail) {
         lv_obj_set_style_pad_all(ui_boot_scroll, 2, LV_PART_MAIN);
         lv_obj_set_scroll_dir(ui_boot_scroll, LV_DIR_VER);
         lv_obj_add_flag(ui_boot_scroll, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scrollbar_mode(ui_boot_scroll, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_scrollbar_mode(ui_boot_scroll, LV_SCROLLBAR_MODE_AUTO);
         // Dojazd by na tomto displeji dobiehal aj počas štartu WiFi a pôsobil ako zaseknutie.
         diaUiMakeScrollSnappy(ui_boot_scroll);
         // Inak dlhé podržanie skončí v návode a menu na obrazovke sa neotvorí.
@@ -1270,40 +1413,6 @@ void showBootStatus(const char *title, const char *detail) {
     }
     lv_obj_clear_flag(ui_boot_scroll, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_set_parent(label_age, ui_boot_scroll);
-    lv_obj_set_style_text_font(label_age, &font_sk_20, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label_age, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_height(label_age, LV_SIZE_CONTENT);
-    lv_label_set_long_mode(label_age, LV_LABEL_LONG_WRAP);
-    // Dôležité: custom font má malý line_height – bez line_space sa riadky prekrývajú (p/j/g)
-    lv_obj_set_style_text_line_space(label_age, 6, LV_PART_MAIN);
-    lv_label_set_text(label_age, detail);
-    // Viacriadkový návod (AP aj „otvor IP a nastav zdroj“) nemá vetu o pomôcke.
-    // Číslované kroky ostávajú vľavo. Krátke „Pripájam…“ / „Načítavam…“ sú v strede.
-    int breaks = 0;
-    if (detail) {
-        for (const char *p = detail; *p; ++p) {
-            if (*p == '\n') breaks++;
-        }
-    }
-    const bool guide = breaks >= 2;
-    // Číslovaný AP návod začína „1.“. Samotný počet riadkov by IP pod textom posunul doľava.
-    const bool steps = detail && detail[0] >= '0' && detail[0] <= '9' && detail[1] == '.';
-    lv_obj_set_width(label_age, diaBoardIsRound() ? (guide ? 176 : 190) : (guide ? 400 : 420));
-    lv_obj_set_style_text_align(label_age, steps ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(label_age, steps ? LV_ALIGN_TOP_LEFT : LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_clear_flag(label_age, LV_OBJ_FLAG_CLICKABLE);
-    // Návod po súhlase aj po WiFi, kým chýba senzor. Veta by zakryla ďalší krok.
-    const bool round = diaBoardIsRound();
-    if (guide) {
-        if (round) {
-            lv_obj_set_size(ui_boot_scroll, 184, hasTitle ? 156 : 188);
-            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 48 : 26);
-        } else {
-            lv_obj_set_size(ui_boot_scroll, 440, hasTitle ? 210 : 250);
-            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 78 : 28);
-        }
-    }
     if (!lbl_boot_legal) {
         lbl_boot_legal = lv_label_create(ui_boot_scroll);
         lv_obj_set_style_text_font(lbl_boot_legal, &font_sk_16, LV_PART_MAIN);
@@ -1314,32 +1423,55 @@ void showBootStatus(const char *title, const char *detail) {
         lv_obj_set_height(lbl_boot_legal, LV_SIZE_CONTENT);
         lv_obj_clear_flag(lbl_boot_legal, LV_OBJ_FLAG_CLICKABLE);
     }
-    lv_obj_set_parent(lbl_boot_legal, guide ? lv_scr_act() : ui_boot_scroll);
+
+    lv_obj_set_style_text_font(label_age, &font_sk_20, LV_PART_MAIN);
+    lv_obj_set_style_text_color(label_age, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_height(label_age, LV_SIZE_CONTENT);
+    lv_label_set_long_mode(label_age, LV_LABEL_LONG_WRAP);
+    // Dôležité: custom font má malý line_height – bez line_space sa riadky prekrývajú (p/j/g)
+    lv_obj_set_style_text_line_space(label_age, 6, LV_PART_MAIN);
+    lv_label_set_text(label_age, detail ? detail : "");
+    lv_obj_clear_flag(label_age, LV_OBJ_FLAG_CLICKABLE);
+
     if (guide) {
+        // AP / IP návod: právny text skryť, celý návod v scrolle
         lv_obj_add_flag(lbl_boot_legal, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_parent(label_age, ui_boot_scroll);
+        lv_obj_set_width(label_age, round ? 176 : 400);
+        lv_obj_set_style_text_align(label_age, steps ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(label_age, steps ? LV_ALIGN_TOP_LEFT : LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_set_style_pad_bottom(ui_boot_scroll, 2, LV_PART_MAIN);
+        if (round) {
+            lv_obj_set_size(ui_boot_scroll, 184, hasTitle ? 156 : 188);
+            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 48 : 26);
+        } else {
+            lv_obj_set_size(ui_boot_scroll, 440, hasTitle ? 210 : 250);
+            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 78 : 28);
+        }
+        lv_obj_scroll_to_y(ui_boot_scroll, 0, LV_ANIM_OFF);
     } else {
-        // Veta a „Skenujem siete...“ sú v jednom posuve. Medzera ich oddelí,
-        // a keď sa na kruh nezmestia, text sa dá posunúť, nič sa neodreže.
+        // WiFi boot: právny text vo vlastnom scrolle; status mimo neho (nemení výšku legal).
         const int boxW = round ? (hasTitle ? 176 : 180) : 440;
-        const int gap = round ? 22 : 28;
-        lv_obj_set_width(label_age, boxW - 8);
+        const int legalH = round ? (hasTitle ? 118 : 140) : (hasTitle ? 150 : 180);
+        const int statusY = round ? (hasTitle ? 178 : 176) : (hasTitle ? 236 : 228);
+
+        lv_obj_set_parent(lbl_boot_legal, ui_boot_scroll);
         lv_obj_set_width(lbl_boot_legal, boxW - 8);
         lv_label_set_text(lbl_boot_legal, S(Str::LegalBoot));
-        lv_obj_align(lbl_boot_legal, LV_ALIGN_TOP_MID, 0, 4);
+        lv_obj_align(lbl_boot_legal, LV_ALIGN_TOP_MID, 0, 2);
         lv_obj_clear_flag(lbl_boot_legal, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_update_layout(lbl_boot_legal);
-        lv_obj_align_to(label_age, lbl_boot_legal, LV_ALIGN_OUT_BOTTOM_MID, 0, gap);
-        lv_obj_set_style_pad_bottom(ui_boot_scroll, 14, LV_PART_MAIN);
-        if (round) {
-            lv_obj_set_size(ui_boot_scroll, boxW, hasTitle ? 168 : 190);
-            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 52 : 26);
-        } else {
-            lv_obj_set_size(ui_boot_scroll, boxW, hasTitle ? 210 : 248);
-            lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? 72 : 32);
-        }
+        lv_obj_set_style_pad_bottom(ui_boot_scroll, 8, LV_PART_MAIN);
+
+        lv_obj_set_size(ui_boot_scroll, boxW, legalH);
+        lv_obj_align(ui_boot_scroll, LV_ALIGN_TOP_MID, 0, hasTitle ? (round ? 42 : 64) : (round ? 22 : 28));
+        lv_obj_scroll_to_y(ui_boot_scroll, 0, LV_ANIM_OFF);
+
+        lv_obj_set_parent(label_age, lv_scr_act());
+        lv_obj_set_width(label_age, boxW - 8);
+        lv_obj_set_style_text_align(label_age, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(label_age, LV_ALIGN_TOP_MID, 0, statusY);
+        lv_obj_move_foreground(label_age);
     }
-    lv_obj_scroll_to_y(ui_boot_scroll, 0, LV_ANIM_OFF);
     if (s_bootLegalFrom == 0) s_bootLegalFrom = millis();
 
     lv_obj_invalidate(lv_scr_act());
@@ -1400,6 +1532,7 @@ void restoreMainScreenChrome() {
     }
     // Boot presunie číslo na vrch. Panely musia ostať nad ním, inak hodnota svieti cez text.
     diaUiRaiseOverlays();
+    diaUiUpdateBattery();
 }
 
 static void main_screen_event_cb(lv_event_t *e) {
@@ -1469,6 +1602,8 @@ void diaUiOpenSettings() {
     if (label_name0) lv_obj_add_flag(label_name0, LV_OBJ_FLAG_HIDDEN);
     if (label_name1) lv_obj_add_flag(label_name1, LV_OBJ_FLAG_HIDDEN);
     diaUiRefreshPumpBtn();
+    diaUiRefreshRestartBtn();
+    diaUiRefreshBattBtn();
     lv_obj_clear_flag(ui_settings_panel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui_settings_panel);
 }
@@ -1794,6 +1929,14 @@ static void toggle_glow_cb(lv_event_t *e) {
     preferences.putBool("show_glow", show_glow);
     if (lbl_btn_glow) lv_label_set_text(lbl_btn_glow, S(show_glow ? Str::GlowOn : Str::GlowOff));
     lv_obj_invalidate(lv_scr_act());
+}
+
+static void toggle_batt_cb(lv_event_t *e) {
+    (void)e;
+    show_batt = !show_batt;
+    preferences.putBool("show_batt", show_batt);
+    diaUiRefreshBattBtn();
+    diaUiUpdateBattery();
 }
 
 static Str diaUiOrientStr() {
@@ -2122,6 +2265,30 @@ static void sync_btn_cb(lv_event_t *e) {
     (void)e;
     diaUiTriggerFetch(false); // z menu bez cooldownu
     lv_timer_create(delayed_close_settings_task, 50, NULL);
+}
+
+static void diaUiRefreshRestartBtn() {
+    if (!lbl_btn_restart) return;
+    DiaBattView batt = {};
+    diaBoardBattRead(&batt);
+    diaUiSetMenuBtnVisible(lbl_btn_restart, batt.present);
+}
+
+static void diaUiRefreshBattBtn() {
+    if (!lbl_btn_batt) return;
+    DiaBattView batt = {};
+    diaBoardBattRead(&batt);
+    const char *want = S(show_batt ? Str::BattOn : Str::BattOff);
+    const char *cur = lv_label_get_text(lbl_btn_batt);
+    if (!cur || strcmp(cur, want) != 0) lv_label_set_text(lbl_btn_batt, want);
+    // Bez článku (USB-only krabička) – žiadne tlačidlo Batéria v menu
+    diaUiSetMenuBtnVisible(lbl_btn_batt, batt.present);
+}
+
+static void restart_btn_cb(lv_event_t *e) {
+    (void)e;
+    esp_rom_printf("[ui] restart\n");
+    ESP.restart();
 }
 
 static lv_obj_t *create_menu_btn(lv_obj_t *parent, const char *text, lv_event_cb_t cb, int user_data,
@@ -3398,6 +3565,52 @@ void build_ui() {
     lv_obj_set_style_text_color(label_status, lv_color_hex(0xFF8800), LV_PART_MAIN);
     lv_obj_set_style_text_font(label_status, &font_sk_20, LV_PART_MAIN);
 
+    batt_root = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(batt_root);
+    lv_obj_set_size(batt_root, 32, 16);
+    lv_obj_clear_flag(batt_root, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(batt_root, LV_OBJ_FLAG_HIDDEN);
+
+    batt_body = lv_obj_create(batt_root);
+    lv_obj_remove_style_all(batt_body);
+    lv_obj_set_size(batt_body, 26, 14);
+    lv_obj_set_pos(batt_body, 0, 1);
+    lv_obj_set_style_radius(batt_body, 2, 0);
+    lv_obj_set_style_border_width(batt_body, 2, 0);
+    lv_obj_set_style_border_post(batt_body, true, 0);
+    lv_obj_set_style_pad_all(batt_body, 0, 0);
+    lv_obj_set_style_border_color(batt_body, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_color(batt_body, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(batt_body, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(batt_body, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    // Dieťa sa kreslí až do vnútra rámčeka. Posun (3,3) nechával medzeru okolo výplne.
+    batt_fill = lv_obj_create(batt_body);
+    lv_obj_remove_style_all(batt_fill);
+    lv_obj_set_pos(batt_fill, 0, 0);
+    lv_obj_set_size(batt_fill, 22, 10);
+    lv_obj_set_style_radius(batt_fill, 0, 0);
+    lv_obj_set_style_bg_color(batt_fill, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(batt_fill, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(batt_fill, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    batt_tip = lv_obj_create(batt_root);
+    lv_obj_remove_style_all(batt_tip);
+    lv_obj_set_size(batt_tip, 4, 6);
+    lv_obj_set_pos(batt_tip, 23, 5);
+    lv_obj_set_style_radius(batt_tip, 1, 0);
+    lv_obj_set_style_bg_color(batt_tip, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(batt_tip, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(batt_tip, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    batt_bolt = lv_line_create(batt_body);
+    lv_line_set_points(batt_bolt, batt_bolt_pts, 4);
+    lv_obj_set_style_line_width(batt_bolt, 2, 0);
+    lv_obj_set_style_line_color(batt_bolt, lv_color_hex(0xFFD000), 0);
+    lv_obj_set_style_line_rounded(batt_bolt, true, 0);
+    lv_obj_clear_flag(batt_bolt, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(batt_bolt, LV_OBJ_FLAG_HIDDEN);
+
     label_source = lv_label_create(lv_scr_act());
     lv_label_set_text(label_source, "");
     lv_obj_set_style_text_color(label_source, lv_color_hex(0x88AACC), LV_PART_MAIN);
@@ -3630,6 +3843,8 @@ void build_ui() {
     lbl_btn_pin = create_menu_btn(tile1, S(diaPinIsSet() ? Str::PinOn : Str::PinOff), open_pin_cb, 0, 0x224466);
     lbl_btn_pin_clear = create_menu_btn(tile1, S(Str::PinClear), open_pin_clear_cb, 0, 0x664422);
     if (!diaPinIsSet()) lv_obj_add_flag(lv_obj_get_parent(lbl_btn_pin_clear), LV_OBJ_FLAG_HIDDEN);
+    lbl_btn_restart = create_menu_btn(tile1, S(Str::Restart), restart_btn_cb, 0, 0x334455);
+    lv_obj_add_flag(lv_obj_get_parent(lbl_btn_restart), LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *spacer = lv_label_create(tile1);
     lv_label_set_text(spacer, "");
@@ -3693,6 +3908,8 @@ void build_ui() {
     lbl_btn_pump = create_menu_btn(tileLook, S(show_pump ? Str::PumpOn : Str::PumpOff), toggle_pump_cb, 0, 0x333366);
     diaUiRefreshPumpBtn();
     lbl_btn_glow = create_menu_btn(tileLook, S(show_glow ? Str::GlowOn : Str::GlowOff), toggle_glow_cb, 0, 0x333366);
+    lbl_btn_batt = create_menu_btn(tileLook, S(show_batt ? Str::BattOn : Str::BattOff), toggle_batt_cb, 0, 0x333366);
+    diaUiRefreshBattBtn();
 #if defined(DIA_BOARD_WS_3_5)
     lbl_btn_orient = create_menu_btn(tileLook, S(diaUiOrientStr()), toggle_orient_cb, 0, 0x333366);
 #endif
@@ -4412,6 +4629,7 @@ static void diaUiApplyLanguage() {
     if (lbl_btn_mode) lv_label_set_text(lbl_btn_mode, S(display_mode >= 2 ? Str::ModeBtn2 : Str::ModeBtn1));
     if (lbl_btn_update) lv_label_set_text(lbl_btn_update, S(Str::Update));
     if (lbl_btn_forget) lv_label_set_text(lbl_btn_forget, S(Str::ForgetWifi));
+    if (lbl_btn_restart) lv_label_set_text(lbl_btn_restart, S(Str::Restart));
     diaUiRefreshPinBtns();
     if (lbl_pin_back) lv_label_set_text(lbl_pin_back, S(Str::Back));
     if (lbl_btn_lang) lv_label_set_text(lbl_btn_lang, diaI18nNativeName(diaI18nGet()));
@@ -4424,6 +4642,7 @@ static void diaUiApplyLanguage() {
     if (lbl_btn_source) lv_label_set_text(lbl_btn_source, S(show_source ? Str::SourceOn : Str::SourceOff));
     diaUiRefreshPumpBtn();
     if (lbl_btn_glow) lv_label_set_text(lbl_btn_glow, S(show_glow ? Str::GlowOn : Str::GlowOff));
+    diaUiRefreshBattBtn();
     diaUiRefreshOrientBtn();
     if (lbl_btn_units) lv_label_set_text(lbl_btn_units, S(use_mgdl ? Str::UnitsMg : Str::UnitsMmol));
     if (lbl_look_title) lv_label_set_text(lbl_look_title, S(Str::LookTitle));

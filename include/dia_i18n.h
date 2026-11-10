@@ -238,6 +238,11 @@ enum class Str : uint16_t {
     PortalLibreAuth,
     PortalLibreEmpty,
     PortalLibreStill,
+    /** Menu: reštart len keď je pripojený článok. */
+    Restart,
+    /** Vzhľad: ikona batérie stále, nielen keď je slabá. Skryté bez článku. */
+    BattOn,
+    BattOff,
     StrCount
 };
 

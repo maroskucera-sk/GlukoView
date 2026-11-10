@@ -90,6 +90,8 @@ extern bool show_source;
 /** Nightscout pump údaje (IOB/COB/basal). Default ZAP ak je NS. */
 extern bool show_pump;
 extern bool show_glow;
+/** Ikona batérie stále. Inak len červená, keď je článok slabý. */
+extern bool show_batt;
 /** 3.5B: 0=USB vpravo, 1=USB vľavo. Round ignoruje. */
 extern uint8_t orient_mode;
 extern bool tls_insecure;

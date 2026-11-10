@@ -212,6 +212,13 @@ bool diaBoardSupportsOrient() { return false; }
 uint8_t diaBoardGetOrientMode() { return 0; }
 void diaBoardSetOrientMode(uint8_t) {}
 bool diaBoardIsFlipped() { return false; }
+void diaBoardBattRead(DiaBattView *out) {
+    if (!out) return;
+    out->present = false;
+    out->charging = false;
+    out->bars = 0;
+}
+bool diaBoardBattPowerSave() { return false; }
 
 void hostSavePng(const char *path) {
     if (!pngWriteRgb565(path, g_fb, FB_W, FB_H, diaBoardIsRound())) {
@@ -278,6 +285,8 @@ bool use_mgdl = false;
 bool show_delta = true;
 bool show_source = false;
 bool show_glow = true;
+bool show_batt = false;
+bool show_pump = true;
 bool tls_insecure = false;
 bool auto_update = true;
 int watchface_style = 0;

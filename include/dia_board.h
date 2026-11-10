@@ -130,3 +130,45 @@ uint8_t diaBoardGetOrientMode();
 void diaBoardSetOrientMode(uint8_t mode);
 /** Efektívny 180° flip voči predvolenému USB-vpravo. */
 bool diaBoardIsFlipped();
+
+/** Stav článku pre malú ikonu. present=false → nekresliť (doska bez batérie). */
+struct DiaBattView {
+    bool present;
+    bool charging;
+    uint8_t bars; // 0..4, platné len keď present
+};
+
+/**
+ * Štyri hrubé dieliky z napätia pod záťažou displeja.
+ * Hysterézia, aby ikona na hranici neskákala.
+ */
+inline uint8_t diaBattBarsStable(uint8_t prev, bool havePrev, int mv) {
+    const int up1 = 3450, up2 = 3650, up3 = 3850, up4 = 4050;
+    const int dn1 = 3380, dn2 = 3580, dn3 = 3780, dn4 = 3980;
+    if (!havePrev) {
+        if (mv >= up4) return 4;
+        if (mv >= up3) return 3;
+        if (mv >= up2) return 2;
+        if (mv >= up1) return 1;
+        return 0;
+    }
+    uint8_t b = prev > 4 ? 4 : prev;
+    if (b < 4 && mv >= up4) b = 4;
+    else if (b < 3 && mv >= up3) b = 3;
+    else if (b < 2 && mv >= up2) b = 2;
+    else if (b < 1 && mv >= up1) b = 1;
+    if (b > 0 && mv < dn1) b = 0;
+    else if (b > 1 && mv < dn2) b = 1;
+    else if (b > 2 && mv < dn3) b = 2;
+    else if (b > 3 && mv < dn4) b = 3;
+    return b;
+}
+
+/** Kruh: GPIO1. Široká: AXP2101. Výsledok je platný aj keď present=false. */
+void diaBoardBattRead(DiaBattView *out);
+
+/**
+ * Po EOC ETA6096 (buck vypnutý) ide spotreba z článku aj pri zapojenom USB.
+ * true = stlm jas / šetriť, kým napätie neklesne na auto-recharge (~4.04 V).
+ */
+bool diaBoardBattPowerSave();

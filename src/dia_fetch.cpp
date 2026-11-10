@@ -19,6 +19,7 @@
 #include <esp_idf_version.h>
 #include <time.h>
 #include <string.h>
+#include <lwip/sockets.h>
 
 // Dual Libre+NS: mbedTLS SHA buffer ide z interného DRAM – po veľkom JSON často chýba.
 static void diaFetchLogHeap(const char *tag) {
@@ -33,6 +34,27 @@ static void diaFetchBreathe(unsigned ms) {
     delay(ms);
     yield();
 }
+
+// GET beží na fetch tasku. Keď recv ignoruje timeout, watchdog len zatvorí socket.
+static WiFiClientSecure *volatile s_liveClient = nullptr;
+static volatile bool s_liveCut = false;
+
+static void diaHttpArm(WiFiClientSecure &client, HTTPClient &http, uint16_t timeoutMs) {
+    if (timeoutMs < 3000) timeoutMs = 3000;
+    client.setTimeout((timeoutMs + 500) / 1000);
+    http.setConnectTimeout((int32_t)timeoutMs);
+    http.setTimeout(timeoutMs);
+    // HTTP/1.0: server zatvorí spojenie, getString nečaká na keep-alive
+    http.useHTTP10(true);
+}
+
+static int diaHttpGet(WiFiClientSecure &client, HTTPClient &http) {
+    s_liveCut = false;
+    s_liveClient = &client;
+    return http.GET();
+}
+
+static void diaHttpRelease() { s_liveClient = nullptr; }
 
 // Watchdog zvýši epoch → task nedokončí zvyšné sloty (žiadne prekryté TLS)
 static volatile uint32_t s_fetchEpoch = 0;
@@ -129,14 +151,19 @@ static int libreHttp(const String &url, bool post, const String *body, bool with
         WiFiClientSecure client;
         configureTlsClient(client, insecure);
         HTTPClient http;
-        http.setTimeout(post ? 15000 : 10000);
+        diaHttpArm(client, http, post ? 15000 : 10000);
         if (!http.begin(client, url)) {
             httpCode = -1;
             continue;
         }
         addLibreHeaders(http, withAuth);
-        httpCode = post ? http.POST(body ? *body : emptyString) : http.GET();
+        if (post) {
+            httpCode = http.POST(body ? *body : emptyString);
+        } else {
+            httpCode = diaHttpGet(client, http);
+        }
         if (httpCode > 0) payload = http.getString();
+        diaHttpRelease();
         http.end();
         if (httpCode > 0) break;
     }
@@ -570,7 +597,7 @@ static int dexcomPost(const String &endpoint, const String &body, String &outPay
         WiFiClientSecure client;
         configureTlsClient(client, insecure);
         HTTPClient http;
-        http.setTimeout(15000);
+        diaHttpArm(client, http, 15000);
         if (!http.begin(client, url)) {
             httpCode = -1;
             continue;
@@ -890,11 +917,12 @@ static void nsFetchPump(const String &base, const char *apiSecretHdr, bool tlsIn
         WiFiClientSecure client;
         configureTlsClient(client, tlsInsecure);
         HTTPClient http;
-        http.setTimeout(4000);
+        diaHttpArm(client, http, 8000);
         if (http.begin(client, url)) {
             if (apiSecretHdr && apiSecretHdr[0]) http.addHeader("api-secret", apiSecretHdr);
-            httpCode = http.GET();
+            httpCode = diaHttpGet(client, http);
             if (httpCode == HTTP_CODE_OK) payload = http.getString();
+            diaHttpRelease();
             http.end();
         }
     }
@@ -1079,17 +1107,18 @@ void fetchNightscout() {
                 WiFiClientSecure client;
                 configureTlsClient(client, insecure);
                 HTTPClient http;
-                http.setTimeout(12000);
+                diaHttpArm(client, http, 12000);
                 if (!http.begin(client, requestUrl)) {
                     httpCode = -1;
                     continue;
                 }
                 if (apiSecretHdr[0]) http.addHeader("api-secret", apiSecretHdr);
-                httpCode = http.GET();
+                httpCode = diaHttpGet(client, http);
                 if (httpCode > 0) {
                     payload = http.getString();
                     usedInsecure = insecure;
                 }
+                diaHttpRelease();
                 http.end();
                 if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == 403)
                     break;
@@ -1279,13 +1308,29 @@ int diaFetchCurrentSlot() { return s_fetchSlot; }
 void diaFetchWatchdog(uint32_t nowMs) {
     if (!s_fetchBusy) return;
     if (s_fetchStartedMs == 0) return;
-    if ((uint32_t)(nowMs - s_fetchStartedMs) < 90000UL) return;
-    if (s_fetchEpoch != s_fetchRunEpoch) return;
-    // Len tento slot. Druhý človek sa po návrate spojenia ešte spustí.
-    s_fetchEpoch++;
-    diaDiagSlow(s_fetchSlot, (uint32_t)(nowMs - s_fetchStartedMs));
-    esp_rom_printf("[fetch] slot %d >90s – dalsi slot pokracuje, tento ide nabuduce posledny\n",
-                   s_fetchSlot);
+    const uint32_t age = (uint32_t)(nowMs - s_fetchStartedMs);
+    if (age >= 20000UL && !s_liveCut) {
+        WiFiClientSecure *live = s_liveClient;
+        if (live) {
+            const int fd = live->fd();
+            if (fd >= 0) {
+                s_liveCut = true;
+                lwip_shutdown(fd, SHUT_RDWR);
+                forceFetch = true;
+                esp_rom_printf("[fetch] socket stop %us\n", (unsigned)(age / 1000));
+            }
+        }
+    }
+    if (age < 90000UL) return;
+    if (s_fetchEpoch == s_fetchRunEpoch) {
+        // Len tento slot. Druhý človek sa po návrate spojenia ešte spustí.
+        // Busy sa tu nemaže: TLS ešte beží a druhé spojenie by ho zhodilo.
+        // Keď volanie spadne, forceFetch spustí ďalšie meranie hneď.
+        s_fetchEpoch++;
+        forceFetch = true;
+        diaDiagSlow(s_fetchSlot, age);
+        esp_rom_printf("[fetch] slot %d >90s – rusim beh\n", s_fetchSlot);
+    }
 }
 
 static bool s_fetchGotReading = false;
@@ -1390,6 +1435,7 @@ void diaFetchPoll() {
     portEXIT_CRITICAL(&s_fetchMux);
 
     if (local.kind == FetchPendingKind::Success) {
+        glucosePersistSlotCache(local.slot);
         diaUiUpdateSlotFace(local.slot);
     } else if (local.kind == FetchPendingKind::Error) {
         if (!s_deferUi || local.slot == s_fetchSlot) {

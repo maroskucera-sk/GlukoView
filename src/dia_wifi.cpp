@@ -76,9 +76,9 @@ static bool isPortalApSsid(const String &ssid) {
 }
 
 static const int kMaxWifiNets = 5;
-static const uint32_t kPerNetTimeoutMs = 12000;
-static const int kConnectRounds = 2;
-static const uint32_t kPortalTimeoutSec = 180; // po timeout znova skúsi STA
+static const uint32_t kPerNetTimeoutMs = 18000; // slabý RSSI potrebuje viac času na scan+assoc
+static const int kConnectRounds = 3;
+static const uint32_t kPortalTimeoutSec = 120; // po timeout znova skúsi STA (skôr než 3 min AP)
 
 struct WifiCred {
     String ssid;
@@ -110,19 +110,31 @@ static bool diaSourceReady(int slot) {
 /**
  * Na displeji držať IP, kým nie je čo sťahovať.
  * (prázdny/off zdroj, nedokončený wizard, chýbajúce heslo/token → inak by svietilo len „Config“)
+ *
+ * Ak už je zdroj pripravený (napr. CareLink tokeny cez /carelink bez dokončenia
+ * wizardu), fetch sa nesmie blokovať – inak po reštarte ostane večne IP návod.
  */
 static bool diaNeedsSourceSetup() {
-    if (preferences.isKey("wiz") && preferences.getUChar("wiz", 255) != 255) return true;
-    if (!diaSourceReady(0)) return true;
+    const bool aReady = diaSourceReady(0);
+    bool bOk = true;
     if (!diaBoardIsRound() && display_mode >= 2) {
         String s1 = profiles[1].dsSource;
         s1.trim();
         s1.toLowerCase();
         // Dual: B ešte nevybrané, alebo vybrané ale nepripravené (off = zámerne vypnuté)
-        if (s1.length() == 0) return true;
-        if (s1 != "off" && !diaSourceReady(1)) return true;
+        if (s1.length() == 0) bOk = false;
+        else if (s1 != "off" && !diaSourceReady(1)) bOk = false;
     }
-    return false;
+    if (aReady && bOk) {
+        if (preferences.isKey("wiz") && preferences.getUChar("wiz", 255) != 255) {
+            preferences.putUChar("wiz", 255);
+            Serial.println("[wifi] wiz auto-done (zdroj ready)");
+        }
+        return false;
+    }
+    if (preferences.isKey("wiz") && preferences.getUChar("wiz", 255) != 255) return true;
+    if (!aReady) return true;
+    return !bOk;
 }
 
 bool diaWifiNeedsSetupHint() { return diaNeedsSourceSetup(); }
@@ -294,8 +306,8 @@ static void persistCreds(const WifiCred *nets, int count) {
             preferences.putString(sk[i], nets[src].ssid);
             diaNvsPutSecret(pk[i], nets[src].pwd);
         } else {
-            preferences.remove(sk[i]);
-            preferences.remove(pk[i]);
+            if (preferences.isKey(sk[i])) preferences.remove(sk[i]);
+            if (preferences.isKey(pk[i])) preferences.remove(pk[i]);
         }
     }
     syncBackupGlobalsFromCreds(nets, count);
@@ -555,6 +567,16 @@ static void diaAfterSourceConfigured() {
     restore_ui_after_wifi();
 }
 
+void diaWifiOnSourceConfigured() {
+    // CareLink /setup môže dokončiť zdroj, kým ešte svieti IP návod (bootUiLock)
+    if (preferences.isKey("wiz") && preferences.getUChar("wiz", 255) != 255 &&
+        !diaNeedsSourceSetup()) {
+        preferences.putUChar("wiz", 255);
+        Serial.println("[wifi] wiz auto-done (onSourceConfigured)");
+    }
+    diaAfterSourceConfigured();
+}
+
 static void diaPortalPatientSelect(String &page, const char *label, const char *fieldName,
                                    const String &cur, const String &list) {
     if (list.length() == 0) {
@@ -731,9 +753,10 @@ static void diaPortalSourceBlock(String &page, bool userB, const String &src,
         page += S(Str::PortalTokensMissing);
         page += F("</p>");
     }
-    // Veľké tlačidlo – jeden ťuk na CareLink (nie drobný odkaz)
+    // Veľké tlačidlo – jeden ťuk; go=1 hneď otvorí CareLink login
     {
         String href = userB ? String("/carelink?slot=1") : String("/carelink?slot=0");
+        if (!clTokOk) href += F("&go=1");
         diaPortalBtn(page, href.c_str(), S(Str::PortalBtnCarelink), "btn-cl");
     }
     // Viditeľný patient select len v guardian bloku; hidden mimo (nižšie mimo div)
@@ -1489,8 +1512,10 @@ static void handleSetup() {
             page += S(Str::ClFollowerHint);
             page += F("</p><a class=btn href=\"/carelink?slot=");
             page += String(slot);
+            // Bez tokenov → hneď login; s tokenmi len výber pacienta
+            if (!carelinkTokensReadyForSlot(slot)) page += F("&go=1");
             page += F("\">");
-            page += S(Str::ClOpenBtn);
+            page += S(Str::PortalBtnCarelink);
             page += F("</a><form method=POST action=/setup><input type=hidden name=step value=");
             page += String(step);
             page += F("><button type=submit>");
@@ -1605,8 +1630,10 @@ static void handleSetup() {
         page += S(Str::WizUnplug);
         page += F("</p><div class=nav>");
         diaPortalBtn(page, "/param?all=1", S(Str::PortalBtnParams));
-        if (showA || showB || profiles[0].dsSource.equalsIgnoreCase("guardian"))
-            diaPortalBtn(page, "/carelink", S(Str::PortalBtnCarelink), "btn-cl");
+        if (showA || showB || profiles[0].dsSource.equalsIgnoreCase("guardian")) {
+            const char *clHref = carelinkTokensReady() ? "/carelink" : "/carelink?go=1";
+            diaPortalBtn(page, clHref, S(Str::PortalBtnCarelink), "btn-cl");
+        }
         diaPortalBtn(page, "/nets", S(Str::PortalBtnWifi), "btn-sec");
         diaPortalBtn(page, "/", S(Str::ClHome), "btn-sec");
         page += F("</div>");
@@ -1839,19 +1866,63 @@ static bool tryConnectOne(const String &ssid, const String &pwd, uint32_t timeou
     WiFi.disconnect(false, false);
     delay(150);
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    // Krátky scan pred begin – pri slabom RSSI inak WL_NO_SSID_AVAIL hneď po štarte
+    // a starý kód to bral ako finálne zlyhanie → falošný AP portál po každom reštarte.
+    // Async + diaUiTick: počas skenu ide LVGL (scroll právneho textu), nie zamrznutý displej.
+    WiFi.scanDelete();
+    const int scanRc = WiFi.scanNetworks(/*async=*/true, /*hidden=*/true);
+    if (scanRc == WIFI_SCAN_RUNNING || scanRc == WIFI_SCAN_FAILED) {
+        const uint32_t scanStart = millis();
+        while (WiFi.scanComplete() == WIFI_SCAN_RUNNING &&
+               (uint32_t)(millis() - scanStart) < 12000UL) {
+            delay(50);
+            diaUiTick(50);
+        }
+    }
+    const int found = WiFi.scanComplete();
+    bool ssidSeen = false;
+    if (found > 0) {
+        for (int i = 0; i < found; i++) {
+            if (WiFi.SSID(i) == ssid) {
+                ssidSeen = true;
+                Serial.printf("WiFi scan hit '%s' RSSI=%d ch=%d\n", ssid.c_str(), WiFi.RSSI(i),
+                              WiFi.channel(i));
+                break;
+            }
+        }
+    }
+    WiFi.scanDelete();
+    if (!ssidSeen) {
+        Serial.printf("WiFi scan: '%s' zatial nevidno (found=%d) – skusam begin aj tak\n",
+                      ssid.c_str(), found);
+    }
+
     WiFi.begin(ssid.c_str(), pwd.c_str());
 
     uint32_t start = millis();
+    uint32_t noSsidSince = 0;
+    uint32_t failSince = 0;
     while (millis() - start < timeoutMs) {
         wl_status_t st = WiFi.status();
         if (st == WL_CONNECTED) {
             Serial.printf("WiFi OK: %s RSSI=%d\n", WiFi.SSID().c_str(), WiFi.RSSI());
             return true;
         }
-        if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
-            // rýchly fail – SSID mimo dosah / zlé heslo
-            delay(300);
-            if (WiFi.status() != WL_CONNECTED) break;
+        // WL_NO_SSID_AVAIL je na ESP32 často prechodné počas scanu – neukončuj hneď.
+        if (st == WL_NO_SSID_AVAIL) {
+            if (noSsidSince == 0) noSsidSince = millis();
+            // Až ~4 s stále „nevidno“ pri už bekajúcom begin = skutočne mimo dosah
+            if ((uint32_t)(millis() - noSsidSince) >= 4000UL && !ssidSeen) break;
+        } else {
+            noSsidSince = 0;
+        }
+        if (st == WL_CONNECT_FAILED) {
+            if (failSince == 0) failSince = millis();
+            // zlé heslo / reject – počkaj chvíľu, či stack neprejde na connected
+            if ((uint32_t)(millis() - failSince) >= 1500UL) break;
+        } else {
+            failSince = 0;
         }
         delay(200);
         diaUiTick(200);
@@ -1889,6 +1960,10 @@ bool diaWifiTryConnect() {
 
     // 1) Postupne každá sieť (spoľahlivé pri zmene lokality)
     for (int round = 0; round < kConnectRounds; round++) {
+        if (round > 0) {
+            Serial.printf("WiFi STA round %d/%d\n", round + 1, kConnectRounds);
+            delay(400);
+        }
         for (int i = 0; i < n; i++) {
             char detail[96];
             snprintf(detail, sizeof(detail), "%d/%d: %s", i + 1, n, nets[i].ssid.c_str());

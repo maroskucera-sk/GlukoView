@@ -2,8 +2,10 @@
 
 #if defined(DIA_BOARD_WS_1_28)
 
+#include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <CST816S.h>
+#include <esp_rom_sys.h>
 
 #define TOUCH_SDA 6
 #define TOUCH_SCL 7
@@ -75,5 +77,147 @@ bool diaBoardSupportsOrient() { return false; }
 uint8_t diaBoardGetOrientMode() { return 0; }
 void diaBoardSetOrientMode(uint8_t mode) { (void)mode; }
 bool diaBoardIsFlipped() { return false; }
+
+// BAT_ADC: 200k+100k, Vbat = Vpin * 3. STAT nie je na GPIO.
+// ETA6096 po EOC vypne buck → spotreba ide z článku aj pri USB (VBUS dióda
+// na VSYS by mala držať napájanie; pri glitchi/BMS cut pomôže len re-plug).
+static int battPinMv() {
+    static bool ready = false;
+    if (!ready) {
+        analogSetPinAttenuation(1, ADC_11db);
+        ready = true;
+    }
+    int sum = 0;
+    int n = 0;
+    for (int i = 0; i < 8; i++) {
+        int mv = analogReadMilliVolts(1);
+        if (mv < 0) continue;
+        sum += mv;
+        n++;
+    }
+    if (n == 0) return 0;
+    return (sum / n) * 3;
+}
+
+static bool s_battPowerSave = false;
+
+bool diaBoardBattPowerSave() { return s_battPowerSave; }
+
+void diaBoardBattRead(DiaBattView *out) {
+    static DiaBattView cached = {};
+    static uint32_t lastMs = 0;
+    static int hist[7];
+    static int histN = 0;
+    static int histPos = 0;
+    static bool charging = false;
+    static uint8_t bars = 0;
+    static bool haveBars = false;
+    static bool loggedAbsent = false;
+    static int lastLogMv = -10000;
+    static int lastCellMv = 0;
+    static bool sawCharge = false;
+
+    const uint32_t now = millis();
+    if (lastMs != 0 && (uint32_t)(now - lastMs) < 10000) {
+        if (out) *out = cached;
+        return;
+    }
+    lastMs = now;
+
+    const int mv = battPinMv();
+    DiaBattView v = {};
+    // USB bez článku: float ~4120–4200. Plný článok na USB je tiež ~4.15–4.2 V –
+    // NIKDY to nebrať ako „batéria preč“ (starý prah >=4110 ×3 to robil).
+    // Článok: 2× mv<=4090, alebo už sme ho mali a napätie ostáva v 2.8–4.5 V.
+    // Preč: mimo rozsah, alebo skok hore do floatu z jasne nižšieho článku (≥80 mV).
+    static constexpr int kCellMax = 4090;
+    static bool wasPresent = false;
+    static uint8_t cellHits = 0;
+    bool cell = false;
+    if (mv < 2800 || mv >= 4500) {
+        cell = false;
+        cellHits = 0;
+        sawCharge = false;
+        s_battPowerSave = false;
+    } else if (wasPresent) {
+        cell = true;
+        if (lastCellMv > 0 && lastCellMv < 4080 && mv >= 4110 && (mv - lastCellMv) >= 80) {
+            // Odpojený článok → návrat na USB float
+            cell = false;
+            cellHits = 0;
+            sawCharge = false;
+            s_battPowerSave = false;
+        }
+    } else if (mv <= kCellMax) {
+        if (cellHits < 2) cellHits++;
+        cell = (cellHits >= 2);
+    } else {
+        cellHits = 0;
+        cell = false;
+    }
+    wasPresent = cell;
+    if (cell) {
+        loggedAbsent = false;
+        v.present = true;
+        lastCellMv = mv;
+        bars = diaBattBarsStable(bars, haveBars, mv);
+        haveBars = true;
+        const int oldest = (histN == 7) ? hist[histPos] : mv;
+        hist[histPos] = mv;
+        histPos = (histPos + 1) % 7;
+        if (histN < 7) histN++;
+        if (histN == 7) {
+            const int delta = mv - oldest;
+            if (delta >= 30) {
+                charging = true;
+                sawCharge = true;
+                s_battPowerSave = false;
+            } else if (delta <= -25) {
+                charging = false;
+                // Po nabití / pri plnom článku: klesá → ETA6096 EOC, beží z BAT
+                if (sawCharge || mv >= 4000) {
+                    if (!s_battPowerSave) {
+                        esp_rom_printf("[batt] EOC/vybijanie %d mV – setrim jas\n", mv);
+                    }
+                    s_battPowerSave = true;
+                }
+            }
+            // Stabilný float / plný na USB: ukazuj nabíjanie (blesk), nie „odpojené“
+            if (mv >= 4150 && delta > -15) {
+                charging = true;
+                sawCharge = true;
+                s_battPowerSave = false;
+            }
+            // Auto-recharge prah ETA6096 ~ EOC−160 mV → znova nabíja
+            if (s_battPowerSave && mv <= 4040 && delta >= 0) {
+                s_battPowerSave = false;
+            }
+        }
+        v.bars = bars;
+        v.charging = charging;
+        if (lastLogMv < -1000 || v.bars != cached.bars || v.charging != cached.charging ||
+            (mv - lastLogMv >= 40) || (lastLogMv - mv >= 40) ||
+            (s_battPowerSave != (cached.charging == false && sawCharge))) {
+            esp_rom_printf("[batt] %d mV bars=%u chg=%d save=%d\n", mv, v.bars,
+                           v.charging ? 1 : 0, s_battPowerSave ? 1 : 0);
+            lastLogMv = mv;
+        }
+    } else {
+        haveBars = false;
+        histN = 0;
+        histPos = 0;
+        charging = false;
+        bars = 0;
+        lastCellMv = 0;
+        s_battPowerSave = false;
+        if (!loggedAbsent || lastLogMv < -1000 || (mv - lastLogMv >= 20) || (lastLogMv - mv >= 20)) {
+            esp_rom_printf("[batt] ziadna (%d mV)\n", mv);
+            loggedAbsent = true;
+            lastLogMv = mv;
+        }
+    }
+    cached = v;
+    if (out) *out = v;
+}
 
 #endif // DIA_BOARD_WS_1_28

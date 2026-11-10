@@ -36,6 +36,8 @@ static const char ISRG_ROOT_X1[] PROGMEM =
 ;
 
 void configureTlsClient(WiFiClientSecure &client, bool tls_insecure) {
+    // Predvolených 120 s inak drží fetch vlákno a nové meranie sa nespustí.
+    client.setHandshakeTimeout(20);
     if (tls_insecure) {
         client.setInsecure();
         return;
