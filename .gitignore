@@ -36,3 +36,6 @@ logindata.json
 
 dist/
 
+# WordPress plugin je v samostatnom súkromnom repozitári, nie v public GlukoView.
+wordpress/
+
