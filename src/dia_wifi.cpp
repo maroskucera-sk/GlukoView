@@ -78,7 +78,8 @@ static bool isPortalApSsid(const String &ssid) {
 static const int kMaxWifiNets = 5;
 static const uint32_t kPerNetTimeoutMs = 18000; // slabý RSSI potrebuje viac času na scan+assoc
 static const int kConnectRounds = 3;
-static const uint32_t kPortalTimeoutSec = 120; // po timeout znova skúsi STA (skôr než 3 min AP)
+static const uint32_t kPortalTimeoutSec = 120; // idle bez klienta AP → znova STA (ak sú uložené siete)
+static const uint32_t kPortalClientGraceSec = 30; // po odpojení mobilu ešte chvíľu drž AP
 
 struct WifiCred {
     String ssid;
@@ -1850,52 +1851,46 @@ void diaWifiAddParameters() {
     refreshPortalSavedNetsHtml();
 }
 
-static bool tryConnectOne(const String &ssid, const String &pwd, uint32_t timeoutMs, bool showUi) {
-    if (ssid.length() == 0) return false;
-
-    Serial.printf("WiFi skusam '%s' (pwd %d, timeout %u ms)\n",
-                  ssid.c_str(), pwd.length(), (unsigned)timeoutMs);
-
-    if (showUi) {
-        char detail[80];
-        snprintf(detail, sizeof(detail), "%s", ssid.c_str());
-        showBootStatus("WiFi", detail);
-    }
-
-    // Dôležité: po neúspechu predchádzajúcej siete uvoľniť STA, inak Multi/begin zlyhá
-    WiFi.disconnect(false, false);
-    delay(150);
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
-    // Krátky scan pred begin – pri slabom RSSI inak WL_NO_SSID_AVAIL hneď po štarte
-    // a starý kód to bral ako finálne zlyhanie → falošný AP portál po každom reštarte.
-    // Async + diaUiTick: počas skenu ide LVGL (scroll právneho textu), nie zamrznutý displej.
+/** Async scan s LVGL tickom – neblokuje scroll právneho textu ako WiFiMulti.run(). */
+static int wifiScanAsyncTick(uint32_t timeoutMs) {
     WiFi.scanDelete();
     const int scanRc = WiFi.scanNetworks(/*async=*/true, /*hidden=*/true);
     if (scanRc == WIFI_SCAN_RUNNING || scanRc == WIFI_SCAN_FAILED) {
         const uint32_t scanStart = millis();
         while (WiFi.scanComplete() == WIFI_SCAN_RUNNING &&
-               (uint32_t)(millis() - scanStart) < 12000UL) {
-            delay(50);
-            diaUiTick(50);
+               (uint32_t)(millis() - scanStart) < timeoutMs) {
+            delay(16);
+            diaUiTick(16);
+            yield();
         }
     }
-    const int found = WiFi.scanComplete();
-    bool ssidSeen = false;
-    if (found > 0) {
-        for (int i = 0; i < found; i++) {
-            if (WiFi.SSID(i) == ssid) {
-                ssidSeen = true;
-                Serial.printf("WiFi scan hit '%s' RSSI=%d ch=%d\n", ssid.c_str(), WiFi.RSSI(i),
-                              WiFi.channel(i));
-                break;
-            }
-        }
+    return WiFi.scanComplete();
+}
+
+static bool wifiScanHasSsid(int found, const String &ssid) {
+    if (found <= 0 || ssid.length() == 0) return false;
+    for (int i = 0; i < found; i++) {
+        if (WiFi.SSID(i) == ssid) return true;
     }
-    WiFi.scanDelete();
+    return false;
+}
+
+/** begin + čakanie. ssidSeen z jedného spoločného scanu (bez ďalšieho scanu tu). */
+static bool tryConnectOne(const String &ssid, const String &pwd, uint32_t timeoutMs, bool ssidSeen) {
+    if (ssid.length() == 0) return false;
+
+    Serial.printf("WiFi skusam '%s' (pwd %d, seen=%d, timeout %u ms)\n",
+                  ssid.c_str(), pwd.length(), ssidSeen ? 1 : 0, (unsigned)timeoutMs);
+
+    // Dôležité: po neúspechu predchádzajúcej siete uvoľniť STA, inak Multi/begin zlyhá
+    WiFi.disconnect(false, false);
+    delay(80);
+    diaUiTick(80);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+
     if (!ssidSeen) {
-        Serial.printf("WiFi scan: '%s' zatial nevidno (found=%d) – skusam begin aj tak\n",
-                      ssid.c_str(), found);
+        Serial.printf("WiFi scan: '%s' zatial nevidno – skusam begin aj tak\n", ssid.c_str());
     }
 
     WiFi.begin(ssid.c_str(), pwd.c_str());
@@ -1924,12 +1919,14 @@ static bool tryConnectOne(const String &ssid, const String &pwd, uint32_t timeou
         } else {
             failSince = 0;
         }
-        delay(200);
-        diaUiTick(200);
+        delay(50);
+        diaUiTick(50);
+        yield();
     }
 
     WiFi.disconnect(false, false);
-    delay(100);
+    delay(40);
+    diaUiTick(40);
     return false;
 }
 
@@ -1956,39 +1953,38 @@ bool diaWifiTryConnect() {
     WiFi.setSleep(false);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     WiFi.disconnect(false, false);
-    delay(200);
+    delay(120);
+    diaUiTick(120);
 
-    // 1) Postupne každá sieť (spoľahlivé pri zmene lokality)
+    // Jedna async skenovacia vlna na kolo + begin (bez WiFiMulti.run – ten mrazil UI 10 s)
     for (int round = 0; round < kConnectRounds; round++) {
         if (round > 0) {
             Serial.printf("WiFi STA round %d/%d\n", round + 1, kConnectRounds);
-            delay(400);
+            delay(200);
+            diaUiTick(200);
         }
+
+        showBootStatus(round == 0 ? "WiFi" : S(Str::BootWifiAgain), S(Str::BootScanning));
+        const int found = wifiScanAsyncTick(10000UL);
+        bool seen[kMaxWifiNets];
+        for (int i = 0; i < n; i++) {
+            seen[i] = wifiScanHasSsid(found, nets[i].ssid);
+            if (seen[i]) {
+                Serial.printf("WiFi scan hit '%s'\n", nets[i].ssid.c_str());
+            }
+        }
+        WiFi.scanDelete();
+
         for (int i = 0; i < n; i++) {
             char detail[96];
             snprintf(detail, sizeof(detail), "%d/%d: %s", i + 1, n, nets[i].ssid.c_str());
             showBootStatus(round == 0 ? "WiFi" : S(Str::BootWifiAgain), detail);
 
-            if (tryConnectOne(nets[i].ssid, nets[i].pwd, kPerNetTimeoutMs, false)) {
+            if (tryConnectOne(nets[i].ssid, nets[i].pwd, kPerNetTimeoutMs, seen[i])) {
                 saveNetworkToBackup(nets[i].ssid, nets[i].pwd.length() > 0 ? nets[i].pwd : lookupStoredPassword(nets[i].ssid));
                 return true;
             }
         }
-    }
-
-    // 2) Posledný pokus: WiFiMulti podľa RSSI (ak je viac sietí v dosahu)
-    showBootStatus("WiFi", S(Str::BootScanning));
-    WiFi.disconnect(false, false);
-    delay(200);
-    for (int attempt = 0; attempt < 3; attempt++) {
-        Serial.printf("WiFiMulti.run attempt %d\n", attempt + 1);
-        if (wifiMulti.run(10000) == WL_CONNECTED) {
-            Serial.printf("WiFiMulti OK: %s\n", WiFi.SSID().c_str());
-            autoSaveNetwork();
-            return true;
-        }
-        delay(500);
-        diaUiTick(500);
     }
 
     Serial.println("WiFi: ziadna zo ulozenych sieti nedostupna.");
@@ -2061,9 +2057,9 @@ bool diaWifiEnsureConnected() {
         wm.setConfigPortalBlocking(false);
         wm.setSaveConnect(true);
         wm.setCaptivePortalEnable(true);
-        // Ak už máme uložené siete – timeout, potom znova skús STA (presun do dielne)
-        // Prvé nastavenie (0 sietí) – čakaj bez timeoutu (zatvorí user / connect)
-        wm.setConfigPortalTimeout(savedCount > 0 ? kPortalTimeoutSec : 0);
+        // Timeout riadime sami: WM timeout=0 (inak by zhodil AP aj keď je mobil pripojený).
+        // 0 uložených sietí = AP drží donekonečna. So sieťami: idle bez klienta → STA retry.
+        wm.setConfigPortalTimeout(0);
         refreshPortalSavedNetsHtml();
 
         wm.startConfigPortal("GlukoView");
@@ -2072,6 +2068,9 @@ bool diaWifiEnsureConnected() {
         uint32_t lastWm = 0;
         bool bootWasDown = false;
         uint32_t bootDownAt = 0;
+        const uint32_t portalStart = millis();
+        uint32_t lastApClientMs = 0;
+        bool sawApClient = false;
         while (wm.getConfigPortalActive()) {
             // Najprv UI – wm.process()/captive portal inak blokuje Späť v menu
             uint32_t now = millis();
@@ -2086,6 +2085,25 @@ bool diaWifiEnsureConnected() {
                 if (held >= 50 && held < 2000) diaUiOpenSettings();
             }
             bootWasDown = down;
+
+            const int apClients = WiFi.softAPgetStationNum();
+            if (apClients > 0) {
+                sawApClient = true;
+                lastApClientMs = now;
+            }
+
+            // Idle timeout len keď nie sme v prvom setup (0 sietí) a nikto nie je na AP
+            if (savedCount > 0 && apClients == 0) {
+                const uint32_t idleFrom = sawApClient ? lastApClientMs : portalStart;
+                const uint32_t limitMs =
+                    (sawApClient ? kPortalClientGraceSec : kPortalTimeoutSec) * 1000UL;
+                if ((uint32_t)(now - idleFrom) >= limitMs) {
+                    Serial.printf("WiFi: AP idle timeout (%s) – skusam STA\n",
+                                  sawApClient ? "po klientovi" : "bez klienta");
+                    wm.stopConfigPortal();
+                    break;
+                }
+            }
 
             if (now - lastWm >= 15) {
                 lastWm = now;

@@ -899,7 +899,7 @@ static void nsFetchPump(const String &base, const char *apiSecretHdr, bool tlsIn
         diaPumpClear(slot);
         return;
     }
-    if (nsIsGluroo(base)) {
+    if (nsIsGluroo(base) || diaIsGlukoViewNsUrl(base)) {
         diaPumpClear(slot);
         return;
     }
@@ -1235,6 +1235,7 @@ void fetchNightscout() {
                     const int slot = diaFetchCurrentSlot();
                     const uint32_t nowMs = millis();
                     const bool pumpDue = show_pump && slot >= 0 && slot < 2 &&
+                                         !diaIsGlukoViewNsUrl(base) &&
                                          (s_nsPumpAt[slot] == 0 ||
                                           (nowMs - s_nsPumpAt[slot]) >= 90000UL);
                     if (pumpDue && !diaFetchAborted()) {

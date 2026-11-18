@@ -229,11 +229,29 @@ int diaProfileActiveCount() {
     return n;
 }
 
+bool diaIsGlukoViewNsUrl(const String &url) {
+    String lower = url;
+    lower.toLowerCase();
+    // Vlastný light endpoint aj budúce subdomény; klasický NS host toto nemá.
+    return lower.indexOf("glukoview") >= 0;
+}
+
 bool diaAnyNightscout() {
     for (int i = 0; i < DIA_PROFILE_COUNT; i++) {
         if (!diaProfileActive(i)) continue;
         const String &s = profiles[i].dsSource;
         if (s == "nightscout" || s == "ns") return true;
+    }
+    return false;
+}
+
+bool diaAnyNightscoutPump() {
+    for (int i = 0; i < DIA_PROFILE_COUNT; i++) {
+        if (!diaProfileActive(i)) continue;
+        const String &s = profiles[i].dsSource;
+        if (s != "nightscout" && s != "ns") continue;
+        if (diaIsGlukoViewNsUrl(profiles[i].nsUrl)) continue;
+        return true;
     }
     return false;
 }
@@ -400,7 +418,7 @@ void diaConfigLoad() {
     show_pump = preferences.isKey("show_pump") ? preferences.getBool("show_pump", true) : true;
     watchface_style = preferences.getInt("wf_style", 0);
     if (watchface_style < 0 || watchface_style > 3) watchface_style = 0;
-    if (watchface_style == 3 && (!show_pump || !diaAnyNightscout())) watchface_style = 0;
+    if (watchface_style == 3 && (!show_pump || !diaAnyNightscoutPump())) watchface_style = 0;
     day_brightness = preferences.getInt("day_br", 255);
     night_brightness = preferences.getInt("night_br", 25);
     day_start_hour = preferences.getInt("day_h", 7);

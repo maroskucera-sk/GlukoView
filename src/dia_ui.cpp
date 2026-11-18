@@ -568,16 +568,17 @@ void updateClockDisplay() {
     updateStaleAndErrorVisuals();
 }
 
-static const char *sourceFaceNameOf(const String &src) {
+static const char *sourceFaceNameOf(const String &src, const String &url) {
     if (src == "libre") return "Libre";
     if (src == "dexcom") return "Dexcom";
     if (src == "guardian") return "Guardian";
-    if (src == "nightscout" || src == "ns") return "Nightscout";
+    if (src == "nightscout" || src == "ns")
+        return diaIsGlukoViewNsUrl(url) ? "GlukoView" : "Nightscout";
     return "";
 }
 
 static const char *sourceFaceName() {
-    return sourceFaceNameOf(dsSource);
+    return sourceFaceNameOf(dsSource, nsUrl);
 }
 
 static bool diaUiIsSplitMode() {
@@ -628,7 +629,7 @@ static void diaUiPlaceSingleName() {
 static int diaUiSplitPage() {
 #if defined(DIA_BOARD_WS_3_5)
     if (watchface_style == 2) return 1;
-    if (watchface_style == 3 && show_pump && diaAnyNightscout()) return 2;
+    if (watchface_style == 3 && show_pump && diaAnyNightscoutPump()) return 2;
     return 0;
 #else
     return 0;
@@ -654,13 +655,15 @@ static void place_top(lv_obj_t *obj, int x, int y) {
 
 /** Single ciferník: stránky 0..2 (+ 3 = pumpa len pri NS a show_pump). */
 static int diaUiFacePageCount() {
-    return (show_pump && diaAnyNightscout()) ? 4 : 3;
+    return (show_pump && diaAnyNightscoutPump()) ? 4 : 3;
 }
 
 static bool diaUiProfileIsNs(int slot) {
     if (slot < 0 || slot > 1) return false;
     const String &s = profiles[slot].dsSource;
-    return s == "nightscout" || s == "ns";
+    if (s != "nightscout" && s != "ns") return false;
+    // GlukoView light URL = len glykémia, bez pump stránky
+    return !diaIsGlukoViewNsUrl(profiles[slot].nsUrl);
 }
 
 static void diaUiHidePumpExtras() {
@@ -736,7 +739,8 @@ static void diaUiSetMenuBtnVisible(lv_obj_t *lbl, bool visible) {
 
 static void diaUiRefreshPumpBtn() {
     if (!lbl_btn_pump) return;
-    const bool ns = diaAnyNightscout();
+    // Pump tlačidlo len pri klasickom NS (GlukoView light pumpu nemá)
+    const bool ns = diaAnyNightscoutPump();
     if (ns) {
         lv_label_set_text(lbl_btn_pump, S(show_pump ? Str::PumpOn : Str::PumpOff));
         diaUiSetMenuBtnVisible(lbl_btn_pump, true);
@@ -977,7 +981,7 @@ static void diaUiPlacePumpFace() {
 
 static void diaUiRefreshPumpLabel() {
     if (s_bootUiLock || diaUiIsSplitMode() || watchface_style != 3 || !show_pump ||
-        !diaAnyNightscout()) {
+        !diaAnyNightscoutPump()) {
         diaUiHidePumpExtras();
         return;
     }
@@ -1014,7 +1018,7 @@ static void diaUiRefreshPumpLabel() {
 void apply_watchface() {
     if (s_bootUiLock) return;
     if (watchface_style < 0 || watchface_style > 3) watchface_style = 0;
-    if (watchface_style == 3 && (!show_pump || !diaAnyNightscout())) watchface_style = 0;
+    if (watchface_style == 3 && (!show_pump || !diaAnyNightscoutPump())) watchface_style = 0;
 
 #if defined(DIA_BOARD_WS_3_5)
     if (diaUiIsSplitMode()) {
@@ -1544,7 +1548,7 @@ static void main_screen_event_cb(lv_event_t *e) {
         if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT) {
             if (diaUiIsSplitMode()) {
                 // Dual: čísla (0) ↔ grafy (2) ↔ pumpa (3) ak NS+pump
-                const bool pumpOk = show_pump && diaAnyNightscout();
+                const bool pumpOk = show_pump && diaAnyNightscoutPump();
                 if (pumpOk) {
                     if (dir == LV_DIR_LEFT) {
                         if (watchface_style == 0) watchface_style = 2;
@@ -1908,7 +1912,7 @@ static void toggle_pump_cb(lv_event_t *e) {
             preferences.putInt("wf_style", watchface_style);
         }
         diaUiHidePumpExtras();
-    } else if (diaAnyNightscout()) {
+    } else if (diaAnyNightscoutPump()) {
         // Single aj dual: hneď pump stránka (swipe 3.)
         watchface_style = 3;
         preferences.putInt("wf_style", watchface_style);
@@ -2708,7 +2712,7 @@ static void diaUiApplySplitSourceLabels() {
             lv_obj_clear_flag(lab, LV_OBJ_FLAG_HIDDEN);
             return;
         }
-        const char *n = sourceFaceNameOf(profiles[slot].dsSource);
+        const char *n = sourceFaceNameOf(profiles[slot].dsSource, profiles[slot].nsUrl);
         if (!n || !n[0]) {
             lv_label_set_text(lab, "");
             lv_obj_add_flag(lab, LV_OBJ_FLAG_HIDDEN);
@@ -2896,7 +2900,7 @@ void diaUiApplyDisplayMode() {
     if (split) {
         // Dual: 0 = čísla, 2 = grafy, 3 = pumpa (ak NS+show_pump)
         if (watchface_style == 1) watchface_style = 0;
-        if (watchface_style == 3 && !(show_pump && diaAnyNightscout())) watchface_style = 0;
+        if (watchface_style == 3 && !(show_pump && diaAnyNightscoutPump())) watchface_style = 0;
         if (watchface_style != 0 && watchface_style != 2 && watchface_style != 3) watchface_style = 0;
         diaUiHidePumpExtras(); // kruhové Sach/IOB len v single
         const int page = diaUiSplitPage(); // 0 čísla, 1 grafy, 2 pumpa

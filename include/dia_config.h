@@ -135,5 +135,9 @@ bool diaProfileConfigured(int slot);
 int diaShownSlot();
 bool diaProfileActive(int slot);
 int diaProfileActiveCount();
-/** true = aspoň jeden aktívny profil má Nightscout (IOB/COB má zmysel). */
+/** true = aspoň jeden aktívny profil má Nightscout / GlukoView light. */
 bool diaAnyNightscout();
+/** Light NS (GlukoView cloud) – len glykémia, bez pump ciferníka / devicestatus. */
+bool diaIsGlukoViewNsUrl(const String &url);
+/** true = aktívny klasický Nightscout (nie GlukoView light) → pump UI má zmysel. */
+bool diaAnyNightscoutPump();

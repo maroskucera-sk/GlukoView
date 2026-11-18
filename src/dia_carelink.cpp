@@ -1019,6 +1019,69 @@ void carelinkForgetEndpoints() {
     clTokenUrl = "";
 }
 
+/** Zabudni aj NVS cache adries – inak discoverEndpointsOnce hneď obnoví staré URL z NVS. */
+static void carelinkForgetEndpointsHard() {
+    carelinkForgetEndpoints();
+    preferences.remove("cl_bcare");
+    preferences.remove("cl_bcum");
+    preferences.remove("cl_tokurl");
+}
+
+// Empty lastSG: streak + soft recover (Solo/Duo). Bez refresh tokenu / bez ESP.restart.
+static uint8_t s_emptyStreak[2] = {0, 0};
+static uint32_t s_lastEmptyRecoverMs[2] = {0, 0};
+static bool s_lastReadWasEmpty = false;
+static bool s_emptyRecoverBusy = false;
+static constexpr uint8_t kEmptyRecoverAfter = 3;
+static constexpr uint32_t kEmptyRecoverCooldownMs = 10UL * 60UL * 1000UL;
+static constexpr long kEmptyRecoverMinAgeSec = 15L * 60L;
+
+static void carelinkNoteGlucoseOk() {
+    s_lastReadWasEmpty = false;
+    const int slot = (dia_active_slot >= 0 && dia_active_slot < 2) ? dia_active_slot : 0;
+    s_emptyStreak[slot] = 0;
+}
+
+/** true = skús ešte raz readGlucose v tomto fetchi (endpointy znova). */
+static bool carelinkShouldRecoverEmpty() {
+    if (s_emptyRecoverBusy) return false;
+    const int slot = (dia_active_slot >= 0 && dia_active_slot < 2) ? dia_active_slot : 0;
+    if (s_emptyStreak[slot] < kEmptyRecoverAfter) return false;
+
+    // Len keď už máme staré číslo na displeji – nie pri prvom nastavení / warm-up
+    const DiaSlotReading &sr = slotReadings[slot];
+    if (!sr.has_valid_reading || sr.mmol <= 0.0f || sr.timestamp <= 0) return false;
+    const time_t now = time(nullptr);
+    if (now < 1600000000L) return false;
+    if ((long)(now - sr.timestamp) < kEmptyRecoverMinAgeSec) return false;
+
+    const uint32_t ms = millis();
+    if (s_lastEmptyRecoverMs[slot] != 0 &&
+        (uint32_t)(ms - s_lastEmptyRecoverMs[slot]) < kEmptyRecoverCooldownMs) {
+        return false;
+    }
+    return true;
+}
+
+static bool carelinkSoftRecoverEmpty() {
+    const int slot = (dia_active_slot >= 0 && dia_active_slot < 2) ? dia_active_slot : 0;
+    s_lastEmptyRecoverMs[slot] = millis();
+    s_emptyRecoverBusy = true;
+    esp_rom_printf("[carelink] empty recover slot=%d streak=%u\n",
+                   slot, (unsigned)s_emptyStreak[slot]);
+    Serial.printf("[carelink] soft recover after empty (slot %d, streak %u)\n",
+                  slot, (unsigned)s_emptyStreak[slot]);
+
+    // Tokeny NEMENIŤ (žiadny refresh) – len cesty + username, ako po USB reboot
+    carelinkForgetEndpointsHard();
+    clUsername = "";
+    const int bindSlot = dia_active_slot;
+    carelinkBindSlot(bindSlot);
+    const bool ok = discoverEndpoints();
+    s_emptyRecoverBusy = false;
+    return ok;
+}
+
 static bool discoverEndpointsOnce() {
     diaDiagStep(dia_active_slot, DiaDiagStep::Discover);
     carelinkRestoreTokenUrl();
@@ -1658,8 +1721,30 @@ static bool readGlucose(bool &authFail) {
     float sg = 0;
     if (last.is<JsonObject>()) sg = last["sg"] | 0.0f;
     else sg = last | 0.0f;
+
+    // Sparkline z patientData.sgs (oldest→newest); fallback = jeden bod
+    JsonArray sgs = pd["sgs"].as<JsonArray>();
+    if (sgs.isNull()) sgs = doc["sgs"].as<JsonArray>();
+
+    // CareLink občas vráti lastSG prázdne, ale sgs[] má body – ber najnovší sg>0
+    long tsFromSgs = 0;
+    if (sg <= 0.0f && !sgs.isNull() && sgs.size() > 0) {
+        for (int i = (int)sgs.size() - 1; i >= 0; i--) {
+            float v = sgs[i]["sg"] | 0.0f;
+            if (v <= 0.0f) continue;
+            sg = v;
+            if (sgs[i].is<JsonObject>()) tsFromSgs = parseCarelinkTime(sgs[i]);
+            Serial.printf("[carelink] lastSG prazdne – beriem sgs[%d]=%.0f\n", i, v);
+            esp_rom_printf("[carelink] fallback sgs[%d]\n", i);
+            break;
+        }
+    }
+
     if (sg <= 0.0f) {
         Serial.println("[carelink] lastSG prazdne");
+        s_lastReadWasEmpty = true;
+        const int slot = (dia_active_slot >= 0 && dia_active_slot < 2) ? dia_active_slot : 0;
+        if (s_emptyStreak[slot] < 250) s_emptyStreak[slot]++;
         markFetchError(FetchError::Empty);
         return true;
     }
@@ -1667,14 +1752,12 @@ static bool readGlucose(bool &authFail) {
     float mmol = (sg > 30.0f) ? mgdl_to_mmol(sg) : sg;
     const char *trend = pd["lastSGTrend"] | "";
     long ts = last.is<JsonObject>() ? parseCarelinkTime(last) : 0;
+    if (ts <= 0 && tsFromSgs > 0) ts = tsFromSgs;
     if (ts <= 0) {
         time_t now = time(nullptr);
         ts = (now > 1700000000) ? (long)now : 0;
     }
 
-    // Sparkline z patientData.sgs (oldest→newest); fallback = jeden bod
-    JsonArray sgs = pd["sgs"].as<JsonArray>();
-    if (sgs.isNull()) sgs = doc["sgs"].as<JsonArray>();
     if (!sgs.isNull() && sgs.size() > 0) {
         const size_t n = sgs.size();
         size_t start = (n > (size_t)DIA_HISTORY_MAX) ? (n - (size_t)DIA_HISTORY_MAX) : 0;
@@ -1705,6 +1788,7 @@ static bool readGlucose(bool &authFail) {
         esp_rom_printf("[carelink] sg ok age=%ld\n", ageMin);
     }
     applyGlucoseReading(mmol, getTrendSymbol(carelinkTrendToDirection(trend)), ts);
+    carelinkNoteGlucoseOk();
     return true;
 }
 
@@ -1882,8 +1966,36 @@ void fetchGuardian() {
     }
 
     bool authFail = false;
-    if (readGlucose(authFail)) {
-        esp_rom_printf("[carelink] OK heap=%u\n", (unsigned)ESP.getFreeHeap());
+    s_lastReadWasEmpty = false;
+    bool got = readGlucose(authFail);
+    // Empty + staré číslo: soft recover (bez refresh tokenu) + 1 retry v tomto fetchi
+    if (got && s_lastReadWasEmpty && carelinkShouldRecoverEmpty()) {
+        if (!carelinkSoftRecoverEmpty()) {
+            esp_rom_printf("[carelink] empty recover discover fail\n");
+            return; // Empty už zafrontované
+        }
+        authFail = false;
+        s_lastReadWasEmpty = false;
+        vTaskDelay(pdMS_TO_TICKS(200));
+        got = readGlucose(authFail);
+        if (got && !s_lastReadWasEmpty) {
+            esp_rom_printf("[carelink] OK after empty recover heap=%u\n",
+                           (unsigned)ESP.getFreeHeap());
+            return;
+        }
+        if (got && s_lastReadWasEmpty) {
+            esp_rom_printf("[carelink] empty after recover – nechavam Empty\n");
+            return;
+        }
+        // got==false: sieť/401 – pokračuj spoločnou vetvou nižšie
+        if (!authFail) {
+            esp_rom_printf("[carelink] Network: read fail after recover\n");
+            markFetchError(FetchError::Network);
+            return;
+        }
+    } else if (got) {
+        if (!s_lastReadWasEmpty)
+            esp_rom_printf("[carelink] OK heap=%u\n", (unsigned)ESP.getFreeHeap());
         return;
     }
     if (!authFail) {
