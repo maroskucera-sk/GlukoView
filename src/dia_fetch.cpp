@@ -1305,11 +1305,16 @@ bool diaFetchBusy() { return s_fetchBusy; }
 bool diaFetchDeferUi() { return s_deferUi; }
 int diaFetchCurrentSlot() { return s_fetchSlot; }
 
-/** Ak fetch task uviazne (TLS), uvoľni busy + zneplatni beh (žiadne 2× TLS naraz). */
-void diaFetchWatchdog(uint32_t nowMs) {
+/** Ak fetch task uviazne (TLS), uvoľni busy + zneplatni beh (žiadne 2× TLS naraz).
+ *  Age vždy z millis() – nowMs z loopu môže byť staré (LVGL flush na širokom
+ *  displeji). Fetch task medzitým nastaví s_fetchStartedMs = millis() →
+ *  nowMs - started underflow ≈ 4294967s → hneď socket stop + abort. */
+void diaFetchWatchdog(uint32_t /*nowMs*/) {
     if (!s_fetchBusy) return;
     if (s_fetchStartedMs == 0) return;
-    const uint32_t age = (uint32_t)(nowMs - s_fetchStartedMs);
+    const uint32_t age = (uint32_t)(millis() - s_fetchStartedMs);
+    // Underflow / nesmysel: jeden fetch nikdy netrvá >10 min.
+    if (age > 600000UL) return;
     if (age >= 20000UL && !s_liveCut) {
         WiFiClientSecure *live = s_liveClient;
         if (live) {

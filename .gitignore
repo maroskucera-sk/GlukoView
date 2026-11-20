@@ -39,3 +39,6 @@ dist/
 # WordPress plugin je v samostatnom súkromnom repozitári, nie v public GlukoView.
 wordpress/
 
+# Webové návody (Dexcom, Libre, Guardian, Syai, ovládanie) nepatria do verejného repozitára.
+docs/web/
+
