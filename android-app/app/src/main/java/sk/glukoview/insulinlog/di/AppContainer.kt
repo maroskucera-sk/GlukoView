@@ -5,7 +5,9 @@ import sk.glukoview.insulinlog.data.local.AppDatabase
 import sk.glukoview.insulinlog.data.local.UserPreferences
 import sk.glukoview.insulinlog.data.nightscout.NightscoutClient
 import sk.glukoview.insulinlog.data.repository.AuthRepository
+import sk.glukoview.insulinlog.data.repository.CatalogRepository
 import sk.glukoview.insulinlog.data.repository.DoseRepository
+import sk.glukoview.insulinlog.data.repository.ExportRepository
 import sk.glukoview.insulinlog.data.repository.SyncRepository
 
 /** Jednoduchý manuálny DI kontajner (bez Hiltu) — stačí pre MVVM základ. */
@@ -19,4 +21,6 @@ class AppContainer(context: Context) {
     val authRepository = AuthRepository(database, preferences)
     val syncRepository = SyncRepository(database, preferences)
     val doseRepository = DoseRepository(database)
+    val catalogRepository = CatalogRepository(database, preferences)
+    val exportRepository = ExportRepository(appContext, database)
 }

@@ -31,7 +31,7 @@
     <string name="save">Uložiť</string>
     <string name="cancel">Zrušiť</string>
     <string name="delete">Zmazať</string>
-    <string name="edit">Upraviť</string>
+    <string name="edit">Upraviť záznam</string>
 
     <string name="site_abdomen">Brucho</string>
     <string name="site_thigh">Stehno</string>
@@ -45,5 +45,4 @@
     <string name="duplicate_bolus_title">Nedávny bolus</string>
     <string name="basal_reminder">Bazálny inzulín ešte dnes nebol zaznamenaný</string>
     <string name="offline_queued">Uložené offline — odošle sa po pripojení</string>
-    <string name="placeholder_step4">Obrazovka sa doplní v kroku 4.</string>
 </resources>

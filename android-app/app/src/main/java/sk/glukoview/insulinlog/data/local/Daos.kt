@@ -24,6 +24,9 @@ interface InsulinDao {
     fun observeActive(): Flow<List<InsulinEntity>>
 
     @Query("SELECT * FROM insulins ORDER BY sortOrder, id")
+    fun observeAll(): Flow<List<InsulinEntity>>
+
+    @Query("SELECT * FROM insulins ORDER BY sortOrder, id")
     suspend fun getAll(): List<InsulinEntity>
 
     @Query("SELECT * FROM insulins WHERE id = :id LIMIT 1")
@@ -37,6 +40,9 @@ interface InsulinDao {
 interface SceneDao {
     @Query("SELECT * FROM scenes WHERE isArchived = 0 ORDER BY sortOrder, id")
     fun observeActive(): Flow<List<SceneEntity>>
+
+    @Query("SELECT * FROM scenes ORDER BY sortOrder, id")
+    fun observeAll(): Flow<List<SceneEntity>>
 
     @Query("SELECT * FROM scenes ORDER BY sortOrder, id")
     suspend fun getAll(): List<SceneEntity>
@@ -70,6 +76,17 @@ interface DoseDao {
 
     @Query("SELECT * FROM doses WHERE uuid = :uuid LIMIT 1")
     suspend fun getByUuid(uuid: String): DoseEntity?
+
+    @Query(
+        """
+        SELECT * FROM doses
+        WHERE deletedAtEpochMs IS NULL
+          AND administeredAtEpochMs >= :fromMs
+          AND administeredAtEpochMs < :toMs
+        ORDER BY administeredAtEpochMs ASC
+        """,
+    )
+    suspend fun listBetween(fromMs: Long, toMs: Long): List<DoseEntity>
 
     @Query("SELECT * FROM doses WHERE syncPending = 1")
     suspend fun getPending(): List<DoseEntity>

@@ -10,7 +10,7 @@ Jazyk UI: **slovenčina** · Dark Mode (systém / svetlá / tmavá)
 | Krok | Obsah | Stav |
 |------|-------|------|
 | 3 | Gradle, navigácia, M3 téma, modely, Room, API + Nightscout, onboarding | ✅ |
-| 4 | Dashboard, Záznam, História, Nastavenia (plné UI) | ⏳ po schválení |
+| 4 | Dashboard, Záznam, História, Nastavenia | ✅ |
 
 ## Otvorenie v Android Studio
 
@@ -18,40 +18,18 @@ Jazyk UI: **slovenčina** · Dark Mode (systém / svetlá / tmavá)
 2. Sync Gradle (AGP 8.7 / JDK 17).
 3. Spustite na emulátore alebo zariadení (minSdk 26).
 
-Pri prvom spustení zadáte:
-- URL vášho PHP API (napr. `https://insulin.vasadomena.sk`)
-- rodinný prístupový kľúč
-- výber profilu (Maroš / Veronika / …)
+Pri prvom spustení zadáte URL PHP API + rodinný kľúč + profil.
 
-## Balíky
+## Obrazovky (krok 4)
 
-```
-sk.glukoview.insulinlog/
-├── di/                 # AppContainer (manuálne DI)
-├── domain/             # modely, IOB, duplicita, NS trend
-├── data/
-│   ├── local/          # Room + DataStore preferencie
-│   ├── remote/         # Retrofit REST klient
-│   ├── nightscout/     # entries.json klient
-│   └── repository/
-└── ui/
-    ├── theme/          # Material 3 (teal, dark mode)
-    ├── navigation/     # bottom bar + FAB
-    ├── onboarding/     # prihlásenie + výber profilu
-    ├── dashboard/      # placeholder → krok 4
-    ├── dose/
-    ├── history/
-    └── settings/
-```
+- **Prehľad:** Nightscout glykémia + trend + delta, IOB, posledná dávka, dnešný zoznam, pripomienka bazálu, pull-to-refresh sync
+- **Pridať/upraviť záznam:** inzulín, ± jednotky, scéna, čas, glykémia (predvyplnená z NS), SJ/g, miesto vpichu, poznámka, varovanie duplicitného bolusu
+- **História:** dni + súhrn rýchly/bazál, tap = úprava
+- **Nastavenia:** profil, téma, Nightscout, inzulíny/scény, sync, CSV export, odhlásenie
 
-## Testy (domain)
+## Build
 
 ```bash
+./gradlew :app:assembleDebug
 ./gradlew :app:testDebugUnitTest
 ```
-
-## Poznámky
-
-- Nightscout volá telefón priamo (URL + token zo `family_settings`).
-- Offline: záznamy majú `syncPending`; `SyncRepository.syncNow()` pushne frontu a pullne deltu.
-- Cleartext HTTP je povolený len pre `localhost` / `10.0.2.2` (emulátor).

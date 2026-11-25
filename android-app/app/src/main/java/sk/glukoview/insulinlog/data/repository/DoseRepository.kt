@@ -49,6 +49,9 @@ class DoseRepository(
         return entity.copy(localId = if (entity.localId == 0L) id else entity.localId).toDomain()
     }
 
+    suspend fun getByUuid(uuid: String): DoseRecord? =
+        db.doses().getByUuid(uuid)?.toDomain()
+
     suspend fun softDeleteLocal(uuid: String) {
         val existing = db.doses().getByUuid(uuid) ?: return
         db.doses().upsert(

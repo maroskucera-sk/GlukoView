@@ -26,10 +26,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import kotlinx.coroutines.flow.first
 import sk.glukoview.insulinlog.R
 import sk.glukoview.insulinlog.data.local.SessionPrefs
@@ -113,11 +115,44 @@ fun AppNavHost(container: AppContainer) {
                     },
                 )
             }
-            composable(Routes.DASHBOARD) { DashboardScreen() }
-            composable(Routes.HISTORY) { HistoryScreen() }
-            composable(Routes.SETTINGS) { SettingsScreen() }
+            composable(Routes.DASHBOARD) {
+                DashboardScreen(
+                    container = container,
+                    onOpenDose = { uuid -> navController.navigate(Routes.editDose(uuid)) },
+                )
+            }
+            composable(Routes.HISTORY) {
+                HistoryScreen(
+                    container = container,
+                    onOpenDose = { uuid -> navController.navigate(Routes.editDose(uuid)) },
+                )
+            }
+            composable(Routes.SETTINGS) {
+                SettingsScreen(
+                    container = container,
+                    onLoggedOut = {
+                        navController.navigate(Routes.ONBOARDING) {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    },
+                )
+            }
             composable(Routes.ADD_DOSE) {
-                AddDoseScreen(onClose = { navController.popBackStack() })
+                AddDoseScreen(
+                    container = container,
+                    onClose = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = Routes.EDIT_DOSE,
+                arguments = listOf(navArgument("uuid") { type = NavType.StringType }),
+            ) { entry ->
+                val uuid = entry.arguments?.getString("uuid")
+                AddDoseScreen(
+                    container = container,
+                    editUuid = uuid,
+                    onClose = { navController.popBackStack() },
+                )
             }
         }
     }
