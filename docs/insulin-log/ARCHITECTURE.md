@@ -20,11 +20,8 @@ GlukoView/
 │   ├── schema.sql                # MySQL schéma + seed dát
 │   └── README.md                 # Nasadenie na hosting (krok 2)
 │
-├── android-app/                  # Kotlin + Jetpack Compose (MVVM)
-│   ├── app/
-│   │   └── src/main/
-│   │       ├── java/.../         # UI, ViewModel, data, sync, ns
-│   │       └── res/
+├── android-app/                  # Kotlin + Jetpack Compose (MVVM) — krok 3 ✅
+│   ├── app/src/main/java/.../    # domain, data (Room/Retrofit/NS), ui
 │   ├── gradle/
 │   └── README.md
 │

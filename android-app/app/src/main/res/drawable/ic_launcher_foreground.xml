@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Jednoduchá kvapka / glykémia symbol -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28 C54,28 38,48 38,60 C38,68.8 45.2,76 54,76 C62.8,76 70,68.8 70,60 C70,48 54,28 54,28 Z" />
+    <path
+        android:fillColor="#E3F2FD"
+        android:pathData="M50,52 h8 v16 h-8 z" />
+</vector>

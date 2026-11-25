@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GlukoView Inzulín</string>
+    <string name="medical_disclaimer">Toto nie je zdravotnícka pomôcka. Hodnoty overujte na senzore alebo glukomere.</string>
+
+    <string name="nav_dashboard">Prehľad</string>
+    <string name="nav_history">História</string>
+    <string name="nav_settings">Nastavenia</string>
+    <string name="nav_add_dose">Pridať záznam</string>
+
+    <string name="onboarding_title">Prihlásenie do rodiny</string>
+    <string name="onboarding_server_url">URL servera</string>
+    <string name="onboarding_access_key">Rodinný prístupový kľúč</string>
+    <string name="onboarding_continue">Pokračovať</string>
+    <string name="onboarding_pick_profile">Kto ste?</string>
+
+    <string name="glucose">Glykémia</string>
+    <string name="iob">Aktívny inzulín (IOB)</string>
+    <string name="last_dose">Naposledy</string>
+    <string name="today_doses">Dnešné záznamy</string>
+    <string name="add_dose">Pridať záznam</string>
+
+    <string name="insulin_bolus">Rýchly / Bolus</string>
+    <string name="insulin_basal">Bazálny</string>
+    <string name="units">Jednotky</string>
+    <string name="scene">Scéna</string>
+    <string name="time">Čas podania</string>
+    <string name="carbs">Sacharidy / SJ</string>
+    <string name="injection_site">Miesto vpichu</string>
+    <string name="note">Poznámka</string>
+    <string name="save">Uložiť</string>
+    <string name="cancel">Zrušiť</string>
+    <string name="delete">Zmazať</string>
+    <string name="edit">Upraviť</string>
+
+    <string name="site_abdomen">Brucho</string>
+    <string name="site_thigh">Stehno</string>
+    <string name="site_arm">Rameno</string>
+    <string name="site_buttock">Zadok</string>
+
+    <string name="theme_system">Podľa systému</string>
+    <string name="theme_light">Svetlý</string>
+    <string name="theme_dark">Tmavý</string>
+
+    <string name="duplicate_bolus_title">Nedávny bolus</string>
+    <string name="basal_reminder">Bazálny inzulín ešte dnes nebol zaznamenaný</string>
+    <string name="offline_queued">Uložené offline — odošle sa po pripojení</string>
+    <string name="placeholder_step4">Obrazovka sa doplní v kroku 4.</string>
+</resources>
