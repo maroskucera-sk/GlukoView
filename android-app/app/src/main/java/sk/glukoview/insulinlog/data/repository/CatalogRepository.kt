@@ -71,7 +71,8 @@ class CatalogRepository(
             "basal_reminder_time" to basalReminderTime,
             "glucose_unit" to glucoseUnit.toApi(),
             "duplicate_bolus_minutes" to duplicateBolusMinutes,
-            "current_injection_site" to currentInjectionSite,
+            // prázdny reťazec = zrušiť aktuálne miesto (null by Gson/server mohli ignorovať)
+            "current_injection_site" to (currentInjectionSite ?: ""),
         )
         val response = api().putSettings(body)
         val entity = response.settings.toEntity()

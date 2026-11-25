@@ -1,5 +1,6 @@
 package sk.glukoview.insulinlog.data.remote
 
+import com.google.gson.GsonBuilder
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -11,6 +12,8 @@ import java.util.concurrent.TimeUnit
 object ApiClientFactory {
     fun create(baseUrl: String, accessKey: String): InsulinLogApi {
         val normalized = baseUrl.trim().trimEnd('/') + "/"
+        // serializeNulls: inak Gson vynechá null a server nerozpozná zrušenie current_injection_site
+        val gson = GsonBuilder().serializeNulls().create()
 
         val auth = Interceptor { chain ->
             val req = chain.request().newBuilder()
@@ -38,7 +41,7 @@ object ApiClientFactory {
         return Retrofit.Builder()
             .baseUrl(normalized)
             .client(client)
-            .addConverterFactory(GsonConverterFactory.create())
+            .addConverterFactory(GsonConverterFactory.create(gson))
             .build()
             .create(InsulinLogApi::class.java)
     }

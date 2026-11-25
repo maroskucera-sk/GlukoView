@@ -133,12 +133,6 @@ class SettingsViewModel(
                         currentInjectionSite = settings.currentInjectionSite.orEmpty(),
                         hydrated = true,
                     )
-                } else if (settings != null && _draft.value.hydrated) {
-                    // sync current site from server if draft wasn't dirty for it
-                    val remote = settings.currentInjectionSite.orEmpty()
-                    if (_draft.value.currentInjectionSite != remote) {
-                        _draft.update { it.copy(currentInjectionSite = remote) }
-                    }
                 }
             }
         }
@@ -153,12 +147,19 @@ class SettingsViewModel(
 
     fun setCurrentInjectionSiteNow(name: String?) {
         viewModelScope.launch {
-            _draft.update { it.copy(currentInjectionSite = name.orEmpty()) }
-            catalogRepository.setCurrentInjectionSite(name?.ifBlank { null })
-                .onSuccess {
+            val cleared = name.isNullOrBlank()
+            _draft.update { it.copy(currentInjectionSite = if (cleared) "" else name!!.trim()) }
+            catalogRepository.setCurrentInjectionSite(if (cleared) null else name!!.trim())
+                .onSuccess { saved ->
+                    _draft.update {
+                        it.copy(currentInjectionSite = saved.currentInjectionSite.orEmpty())
+                    }
                     _flash.value = Flash(
-                        message = if (name.isNullOrBlank()) "Aktuálne miesto zrušené."
-                        else "Aktuálne miesto: $name",
+                        message = if (saved.currentInjectionSite.isNullOrBlank()) {
+                            "Aktuálne miesto zrušené."
+                        } else {
+                            "Aktuálne miesto: ${saved.currentInjectionSite}"
+                        },
                     )
                 }
                 .onFailure { e -> _flash.value = Flash(error = e.message) }

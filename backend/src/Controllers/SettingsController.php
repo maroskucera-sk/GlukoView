@@ -63,6 +63,7 @@ final class SettingsController
             Response::error('duplicate_bolus_minutes musí byť 0–180.', 422);
         }
 
+        // Explicitný kľúč (aj null / "") zruší aktuálne miesto; chýbajúci kľúč = bez zmeny.
         $currentSite = array_key_exists('current_injection_site', $data)
             ? optional_string($data['current_injection_site'], 80)
             : ($existing['current_injection_site'] ?? null);
