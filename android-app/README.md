@@ -9,23 +9,25 @@ Jazyk UI: **slovenčina** · Dark Mode (systém / svetlá / tmavá)
 
 | Krok | Obsah | Stav |
 |------|-------|------|
-| 3 | Gradle, navigácia, M3 téma, modely, Room, API + Nightscout, onboarding | ✅ |
-| 4 | Dashboard, Záznam, História, Nastavenia | ✅ |
+| 3–4 | Compose app + obrazovky | ✅ |
+| UX | Time picker, kombinovaný export pre lekára (CSV/PDF) | ✅ |
 
-## Otvorenie v Android Studio
+## Nightscout — čo appka robí s glykémiami?
 
-1. Otvorte priečinok `android-app/` (nie celý GlukoView root).
-2. Sync Gradle (AGP 8.7 / JDK 17).
-3. Spustite na emulátore alebo zariadení (minSdk 26).
+| Režim | Správanie |
+|-------|-----------|
+| **Dashboard** | Stiahne len aktuálne 1–2 merania. CGM históriu **neukladá**. |
+| **Zápis dávky** | Predvyplní aktuálnu G (+ trend); uloží sa len pri dávke. |
+| **Export pre lekára** | On-demand stiahne CGM za obdobie z Nightscoutu a **zlúči s inzulínom** do jedného CSV/PDF. |
 
-Pri prvom spustení zadáte URL PHP API + rodinný kľúč + profil.
+Zdroj pravdy pre CGM ostáva Nightscout (žiadna duplicitná archívna DB v telefóne).
 
-## Obrazovky (krok 4)
+## Obrazovky
 
-- **Prehľad:** Nightscout glykémia + trend + delta, IOB, posledná dávka, dnešný zoznam, pripomienka bazálu, pull-to-refresh sync
-- **Pridať/upraviť záznam:** inzulín, ± jednotky, scéna, čas, glykémia (predvyplnená z NS), SJ/g, miesto vpichu, poznámka, varovanie duplicitného bolusu
-- **História:** dni + súhrn rýchly/bazál, tap = úprava
-- **Nastavenia:** profil, téma, Nightscout, inzulíny/scény, sync, CSV export, odhlásenie
+- **Prehľad:** NS glykémia + trend/delta, IOB, posledná dávka, dnešný zoznam, pripomienka bazálu
+- **Záznam:** inzulín, ± j, scéna, dátum/čas picker, glykémia, SJ/g, miesto vpichu, poznámka, varovanie duplicity
+- **História:** dni + súhrn rýchly/bazál
+- **Nastavenia:** profil, téma, Nightscout, inzulíny/scény, sync, **export CSV/PDF pre diabetológa**
 
 ## Build
 

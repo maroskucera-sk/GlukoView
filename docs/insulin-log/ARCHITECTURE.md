@@ -54,9 +54,10 @@ Každý záznam má klientský `uuid` (UUID v4), aby sa rovnaký offline zápis 
 
 ## Nightscout
 
-- Aplikácia volá Nightscout **priamo z telefónu** (`/api/v1/entries.json?count=1`).
-- Backend Nightscout neproxyuje (jednoduchší hosting, menej latencie).
-- Pri novom zázname sa predvyplní glykémia + trend; používateľ môže upraviť.
+- Aplikácia volá Nightscout **priamo z telefónu** (backend ho neproxyuje).
+- **Bežná práca (dashboard / predvyplnenie):** stiahne len aktuálne 1–2 merania (`entries.json?count=2`). CGM históriu do Room **neukladá**.
+- **Export pre diabetológa:** pri stlačení exportu on-demand stiahne entries za zvolené obdobie a **v jednom CSV/PDF** zlúči časovú os glykémií s inzulínovými dávkami. Zdroj pravdy pre CGM ostáva Nightscout.
+- Pri novom zázname sa predvyplní aktuálna glykémia + trend; používateľ môže upraviť (glukomer / výpadok senzora).
 
 ## IOB (orientačné)
 

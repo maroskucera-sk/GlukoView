@@ -13,7 +13,14 @@ import sk.glukoview.insulinlog.domain.NightscoutReading
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import kotlin.math.ceil
 
+/**
+ * Nightscout stratégia:
+ * - Bežná práca appky: stiahne len aktuálne 1–2 merania (dashboard, predvyplnenie).
+ * - CGM históriu neukladáme do Room — zdroj pravdy ostáva Nightscout.
+ * - Export pre lekára: pri exporte on-demand stiahne entries za zvolené obdobie a zlúči s inzulínom.
+ */
 class NightscoutClient {
     suspend fun fetchLatest(
         baseUrl: String,
@@ -28,6 +35,33 @@ class NightscoutClient {
             ?: error("Nightscout nevrátil žiadne meranie.")
         val previous = entries.getOrNull(1)
         latest to previous
+    }
+
+    /**
+     * Stiahne glykémie za [from, to]. Najprv skúsi date-filter API, pri chybe fallback na count.
+     */
+    suspend fun fetchRange(
+        baseUrl: String,
+        tokenOrSecret: String?,
+        from: Instant,
+        to: Instant,
+    ): Result<List<NightscoutReading>> = runCatching {
+        val api = createApi(baseUrl, tokenOrSecret)
+        val fromMs = from.toEpochMilli()
+        val toMs = to.toEpochMilli()
+        val days = ceil(Duration.between(from, to).toMinutes().coerceAtLeast(1) / 1440.0).toInt()
+        // ~288 CGM bodov / deň (5 min) + rezerva
+        val estimated = (days * 320).coerceIn(500, 50_000)
+
+        val raw = runCatching {
+            api.entriesByDate(gteMs = fromMs, lteMs = toMs, count = estimated)
+        }.getOrElse {
+            api.latestEntries(count = estimated)
+        }
+
+        raw.mapNotNull { it.toReading() }
+            .filter { !it.date.isBefore(from) && !it.date.isAfter(to) }
+            .sortedBy { it.date }
     }
 
     fun formatAge(reading: NightscoutReading, now: Instant = Instant.now()): String {
@@ -75,7 +109,6 @@ class NightscoutClient {
 
     private fun createApi(baseUrl: String, tokenOrSecret: String?): NightscoutApi {
         var url = baseUrl.trim().trimEnd('/')
-        // Užívateľ môže vložiť URL s /api/v1 — odrežeme
         if (url.endsWith("/api/v1", ignoreCase = true)) {
             url = url.dropLast("/api/v1".length)
         }
@@ -86,7 +119,6 @@ class NightscoutClient {
             val builder = original.newBuilder()
             val token = tokenOrSecret?.trim().orEmpty()
             if (token.isNotEmpty()) {
-                // Nightscout: API Secret (sha1) alebo token v query / hlavičke
                 builder.header("api-secret", token)
                 val withToken = original.url.newBuilder()
                     .addQueryParameter("token", token)
@@ -102,8 +134,8 @@ class NightscoutClient {
         }
 
         val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
             .addInterceptor(auth)
             .addInterceptor(logging)
             .build()

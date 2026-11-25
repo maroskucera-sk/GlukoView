@@ -14,6 +14,7 @@ import sk.glukoview.insulinlog.data.local.SessionPrefs
 import sk.glukoview.insulinlog.data.local.UserPreferences
 import sk.glukoview.insulinlog.data.repository.AuthRepository
 import sk.glukoview.insulinlog.data.repository.CatalogRepository
+import sk.glukoview.insulinlog.data.repository.DoctorExportFormat
 import sk.glukoview.insulinlog.data.repository.ExportRepository
 import sk.glukoview.insulinlog.data.repository.SyncRepository
 import sk.glukoview.insulinlog.domain.FamilySettings
@@ -210,16 +211,23 @@ class SettingsViewModel(
         }
     }
 
-    fun exportLastDays(days: Long) {
+    fun exportForDoctor(days: Long, format: DoctorExportFormat) {
         viewModelScope.launch {
             _busy.value = true
             runCatching {
                 val to = Formatters.endOfDay(LocalDate.now())
                 val from = Formatters.startOfDay(LocalDate.now().minusDays(days - 1))
-                exportRepository.buildCsvFile(from, to)
-            }.onSuccess {
-                _export.value = it
-                _flash.value = Flash(message = "CSV pripravené na zdieľanie.")
+                exportRepository.buildDoctorExport(from, to, format)
+            }.onSuccess { result ->
+                _export.value = result.file
+                val nsPart = when {
+                    result.nightscoutOk -> "CGM ${result.glucoseCount} bodov"
+                    else -> "CGM nedostupné"
+                }
+                val kind = if (format == DoctorExportFormat.PDF) "PDF" else "CSV"
+                _flash.value = Flash(
+                    message = "Export $kind: ${result.doseCount} dávok, $nsPart — pripravené na zdieľanie.",
+                )
             }.onFailure { e ->
                 _flash.value = Flash(error = e.message)
             }

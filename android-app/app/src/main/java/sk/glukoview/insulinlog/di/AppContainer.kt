@@ -22,5 +22,5 @@ class AppContainer(context: Context) {
     val syncRepository = SyncRepository(database, preferences)
     val doseRepository = DoseRepository(database)
     val catalogRepository = CatalogRepository(database, preferences)
-    val exportRepository = ExportRepository(appContext, database)
+    val exportRepository = ExportRepository(appContext, database, nightscout)
 }

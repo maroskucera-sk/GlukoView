@@ -1,5 +1,7 @@
 package sk.glukoview.insulinlog.ui.dose
 
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -45,6 +48,7 @@ import sk.glukoview.insulinlog.di.AppContainer
 import sk.glukoview.insulinlog.domain.InjectionSite
 import sk.glukoview.insulinlog.domain.InsulinCategory
 import sk.glukoview.insulinlog.ui.util.Formatters
+import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -189,9 +193,42 @@ fun AddDoseScreen(
             }
 
             SectionLabel(stringResource(R.string.time))
+            val context = LocalContext.current
+            val zone = ZoneId.systemDefault()
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(Formatters.localDateTime(state.administeredAt), modifier = Modifier.weight(1f))
                 OutlinedButton(onClick = vm::setNow) { Text("Teraz") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val zdt = state.administeredAt.atZone(zone)
+                        DatePickerDialog(
+                            context,
+                            { _, y, m, d ->
+                                val updated = zdt.withYear(y).withMonth(m + 1).withDayOfMonth(d).toInstant()
+                                vm.setAdministeredAt(updated)
+                            },
+                            zdt.year,
+                            zdt.monthValue - 1,
+                            zdt.dayOfMonth,
+                        ).show()
+                    },
+                ) { Text("Dátum") }
+                OutlinedButton(
+                    onClick = {
+                        val zdt = state.administeredAt.atZone(zone)
+                        TimePickerDialog(
+                            context,
+                            { _, hour, minute ->
+                                vm.setAdministeredAt(zdt.withHour(hour).withMinute(minute).withSecond(0).toInstant())
+                            },
+                            zdt.hour,
+                            zdt.minute,
+                            true,
+                        ).show()
+                    },
+                ) { Text("Čas") }
                 OutlinedButton(
                     onClick = {
                         vm.setAdministeredAt(state.administeredAt.minus(15, ChronoUnit.MINUTES))

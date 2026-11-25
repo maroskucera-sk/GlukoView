@@ -39,6 +39,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import sk.glukoview.insulinlog.R
+import sk.glukoview.insulinlog.data.repository.DoctorExportFormat
 import sk.glukoview.insulinlog.di.AppContainer
 import sk.glukoview.insulinlog.domain.GlucoseUnit
 import sk.glukoview.insulinlog.domain.InsulinCategory
@@ -72,12 +73,16 @@ fun SettingsScreen(
             "${context.packageName}.fileprovider",
             file,
         )
+        val mime = when {
+            file.name.endsWith(".pdf", ignoreCase = true) -> "application/pdf"
+            else -> "text/csv"
+        }
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/csv"
+            type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "Export CSV"))
+        context.startActivity(Intent.createChooser(intent, "Export pre lekára"))
         vm.clearExport()
     }
 
@@ -249,22 +254,40 @@ fun SettingsScreen(
                 ) { Text("Pridať") }
             }
 
+            Section("Export pre diabetológa")
+            Text(
+                text = "Pri exporte sa z Nightscoutu on-demand stiahne históriá glykémií za obdobie " +
+                    "a zlúči sa s inzulínovými dávkami do jedného súboru. CGM sa v telefóne natrvalo neukladá.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = { vm.exportForDoctor(14, DoctorExportFormat.CSV) },
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (state.busy) "Pripravujem…" else "CSV: gly + inzulín (14 dní)") }
+            OutlinedButton(
+                onClick = { vm.exportForDoctor(30, DoctorExportFormat.CSV) },
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("CSV: gly + inzulín (30 dní)") }
+            OutlinedButton(
+                onClick = { vm.exportForDoctor(14, DoctorExportFormat.PDF) },
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("PDF správa (14 dní)") }
+            OutlinedButton(
+                onClick = { vm.exportForDoctor(30, DoctorExportFormat.PDF) },
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("PDF správa (30 dní)") }
+
             Section("Dáta")
             OutlinedButton(
                 onClick = vm::syncNow,
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Synchronizovať teraz") }
-            OutlinedButton(
-                onClick = { vm.exportLastDays(30) },
-                enabled = !state.busy,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Export CSV (30 dní)") }
-            OutlinedButton(
-                onClick = { vm.exportLastDays(90) },
-                enabled = !state.busy,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Export CSV (90 dní)") }
 
             state.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
