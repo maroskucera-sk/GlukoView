@@ -3,11 +3,13 @@ package sk.glukoview.insulinlog.ui.dashboard
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import sk.glukoview.insulinlog.data.local.SessionPrefs
 import sk.glukoview.insulinlog.data.local.UserPreferences
@@ -128,6 +130,13 @@ class DashboardViewModel(
 
     init {
         refresh()
+        // Kým je dashboard „živý“, Nightscout sa obnovuje každú minútu (bez plného syncu).
+        viewModelScope.launch {
+            while (isActive) {
+                delay(AUTO_NS_REFRESH_MS)
+                fetchNightscout()
+            }
+        }
     }
 
     fun refresh() {
@@ -137,6 +146,11 @@ class DashboardViewModel(
             fetchNightscout()
             _refreshing.value = false
         }
+    }
+
+    /** Len glykémiu (rýchle, napr. po návrate do appky). */
+    fun refreshGlucose() {
+        viewModelScope.launch { fetchNightscout() }
     }
 
     private suspend fun fetchNightscout() {
@@ -182,6 +196,8 @@ class DashboardViewModel(
     )
 
     companion object {
+        private const val AUTO_NS_REFRESH_MS = 60_000L
+
         fun factory(
             doseRepository: DoseRepository,
             catalogRepository: CatalogRepository,

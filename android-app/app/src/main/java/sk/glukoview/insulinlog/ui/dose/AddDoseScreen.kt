@@ -222,19 +222,34 @@ fun AddDoseScreen(
             )
 
             SectionLabel(stringResource(R.string.glucose))
-            OutlinedTextField(
-                value = state.glucoseText,
-                onValueChange = vm::setGlucose,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                suffix = {
-                    Text(if (state.glucoseUnit.name == "MMOL") "mmol/L" else "mg/dL")
-                },
-                supportingText = {
-                    state.glucoseTrend?.let { Text("Trend: $it") }
-                },
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.glucoseText,
+                    onValueChange = vm::setGlucose,
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    enabled = !state.glucoseRefreshing,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    suffix = {
+                        Text(if (state.glucoseUnit.name == "MMOL") "mmol/L" else "mg/dL")
+                    },
+                    supportingText = {
+                        when {
+                            state.glucoseRefreshing -> Text("Načítavam z Nightscoutu…")
+                            state.glucoseTrend != null -> Text("Trend: ${state.glucoseTrend}")
+                        }
+                    },
+                )
+                OutlinedButton(
+                    onClick = vm::refreshGlucoseFromNightscout,
+                    enabled = !state.glucoseRefreshing,
+                ) {
+                    Text(if (state.glucoseRefreshing) "…" else "NS")
+                }
+            }
 
             SectionLabel(stringResource(R.string.carbs))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

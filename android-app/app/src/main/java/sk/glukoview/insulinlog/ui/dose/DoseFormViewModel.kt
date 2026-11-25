@@ -57,6 +57,7 @@ data class DoseFormUiState(
     val existingDoses: List<DoseRecord> = emptyList(),
     /** Posledných 10 dávok (celá rodina) na rýchle opakovanie. */
     val recentForRepeat: List<DoseRecord> = emptyList(),
+    val glucoseRefreshing: Boolean = false,
 )
 
 class DoseFormViewModel(
@@ -152,16 +153,27 @@ class DoseFormViewModel(
     private suspend fun prefillNightscout() {
         val settings = catalogRepository.getSettings() ?: return
         val url = settings.nightscoutUrl ?: return
-        nightscout.fetchLatest(url, settings.nightscoutToken).onSuccess { (latest, _) ->
-            val value = GlucoseUnits.convert(latest.sgvMgdl, GlucoseUnit.MGDL, settings.glucoseUnit)
-            _form.update {
-                it.copy(
-                    glucoseText = GlucoseUnits.format(value, settings.glucoseUnit),
-                    glucoseUnit = settings.glucoseUnit,
-                    glucoseTrend = latest.directionRaw,
-                )
+        _form.update { it.copy(glucoseRefreshing = true) }
+        nightscout.fetchLatest(url, settings.nightscoutToken)
+            .onSuccess { (latest, _) ->
+                val value = GlucoseUnits.convert(latest.sgvMgdl, GlucoseUnit.MGDL, settings.glucoseUnit)
+                _form.update {
+                    it.copy(
+                        glucoseText = GlucoseUnits.format(value, settings.glucoseUnit),
+                        glucoseUnit = settings.glucoseUnit,
+                        glucoseTrend = latest.directionRaw,
+                        glucoseRefreshing = false,
+                    )
+                }
             }
-        }
+            .onFailure {
+                _form.update { it.copy(glucoseRefreshing = false) }
+            }
+    }
+
+    /** Znova stiahne aktuálnu glykémiu z Nightscoutu do poľa. */
+    fun refreshGlucoseFromNightscout() {
+        viewModelScope.launch { prefillNightscout() }
     }
 
     fun selectInsulin(id: Long) = _form.update { it.copy(selectedInsulinId = id, error = null) }
