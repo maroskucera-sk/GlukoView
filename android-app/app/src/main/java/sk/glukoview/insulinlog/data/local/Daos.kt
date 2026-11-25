@@ -52,6 +52,18 @@ interface SceneDao {
 }
 
 @Dao
+interface InjectionSiteDao {
+    @Query("SELECT * FROM injection_sites WHERE isArchived = 0 ORDER BY sortOrder, id")
+    fun observeActive(): Flow<List<InjectionSiteEntity>>
+
+    @Query("SELECT * FROM injection_sites ORDER BY sortOrder, id")
+    fun observeAll(): Flow<List<InjectionSiteEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<InjectionSiteEntity>)
+}
+
+@Dao
 interface DoseDao {
     @Query(
         """

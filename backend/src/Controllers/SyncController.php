@@ -27,6 +27,10 @@ final class SyncController
                 'SELECT * FROM scenes WHERE family_id = ? ORDER BY sort_order, id',
                 [$fid]
             );
+            $injectionSites = Db::fetchAll(
+                'SELECT * FROM injection_sites WHERE family_id = ? ORDER BY sort_order, id',
+                [$fid]
+            );
             $doses = Db::fetchAll(
                 'SELECT * FROM dose_records WHERE family_id = ? AND deleted_at IS NULL
                  ORDER BY administered_at DESC LIMIT 500',
@@ -43,6 +47,10 @@ final class SyncController
             );
             $scenes = Db::fetchAll(
                 'SELECT * FROM scenes WHERE family_id = ? AND updated_at > ? ORDER BY updated_at',
+                [$fid, $since]
+            );
+            $injectionSites = Db::fetchAll(
+                'SELECT * FROM injection_sites WHERE family_id = ? AND updated_at > ? ORDER BY updated_at',
                 [$fid, $since]
             );
             $doses = Db::fetchAll(
@@ -65,9 +73,10 @@ final class SyncController
             'since'       => $sinceRaw,
             'profiles'    => array_map([Mapper::class, 'profile'], $profiles),
             'insulins'    => array_map([Mapper::class, 'insulin'], $insulins),
-            'scenes'      => array_map([Mapper::class, 'scene'], $scenes),
-            'doses'       => array_map([Mapper::class, 'dose'], $doses),
-            'settings'    => $settingsRow ? Mapper::settings($settingsRow) : null,
+            'scenes'           => array_map([Mapper::class, 'scene'], $scenes),
+            'injection_sites'  => array_map([Mapper::class, 'injectionSite'], $injectionSites),
+            'doses'            => array_map([Mapper::class, 'dose'], $doses),
+            'settings'         => $settingsRow ? Mapper::settings($settingsRow) : null,
         ]);
     }
 }

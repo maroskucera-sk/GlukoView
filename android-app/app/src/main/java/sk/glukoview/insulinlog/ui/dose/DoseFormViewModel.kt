@@ -35,6 +35,7 @@ data class DoseFormUiState(
     val uuid: String = "",
     val insulins: List<InsulinType> = emptyList(),
     val scenes: List<Scene> = emptyList(),
+    val injectionSites: List<InjectionSite> = emptyList(),
     val profiles: Map<Long, Profile> = emptyMap(),
     val selectedInsulinId: Long? = null,
     val selectedSceneId: Long? = null,
@@ -45,7 +46,8 @@ data class DoseFormUiState(
     val glucoseTrend: String? = null,
     val carbsSjText: String = "",
     val carbsGramsText: String = "",
-    val injectionSite: InjectionSite? = null,
+    val injectionSite: String? = null,
+    val currentInjectionSite: String? = null,
     val note: String = "",
     val profileId: Long? = null,
     val warning: DuplicateBolusWarning? = null,
@@ -67,21 +69,42 @@ class DoseFormViewModel(
 ) : ViewModel() {
     private val _form = MutableStateFlow(DoseFormUiState(uuid = editUuid ?: UUID.randomUUID().toString(), isEdit = editUuid != null))
 
+    private data class CatalogBundle(
+        val insulins: List<InsulinType>,
+        val scenes: List<Scene>,
+        val sites: List<InjectionSite>,
+        val profiles: List<Profile>,
+        val doses: List<DoseRecord>,
+        val currentSite: String?,
+    )
+
     val state: StateFlow<DoseFormUiState> = combine(
         _form,
-        catalogRepository.observeInsulins(),
-        catalogRepository.observeScenes(),
-        catalogRepository.observeProfiles(),
-        doseRepository.observeRecent(100),
-    ) { form, insulins, scenes, profiles, doses ->
+        combine(
+            catalogRepository.observeInsulins(),
+            catalogRepository.observeScenes(),
+            catalogRepository.observeInjectionSites(),
+            catalogRepository.observeProfiles(),
+            combine(
+                doseRepository.observeRecent(100),
+                catalogRepository.observeSettings(),
+            ) { doses, settings -> doses to settings?.currentInjectionSite },
+        ) { insulins, scenes, sites, profiles, doseSite ->
+            CatalogBundle(
+                insulins, scenes, sites, profiles, doseSite.first, doseSite.second,
+            )
+        },
+    ) { form, catalog ->
         form.copy(
-            insulins = insulins,
-            scenes = scenes,
-            profiles = profiles.associateBy { it.id },
-            existingDoses = doses,
-            recentForRepeat = if (form.isEdit) emptyList() else doses.take(10),
-            selectedInsulinId = form.selectedInsulinId ?: insulins.firstOrNull()?.id,
-            selectedSceneId = form.selectedSceneId ?: scenes.firstOrNull()?.id,
+            insulins = catalog.insulins,
+            scenes = catalog.scenes,
+            injectionSites = catalog.sites,
+            profiles = catalog.profiles.associateBy { it.id },
+            existingDoses = catalog.doses,
+            recentForRepeat = if (form.isEdit) emptyList() else catalog.doses.take(10),
+            selectedInsulinId = form.selectedInsulinId ?: catalog.insulins.firstOrNull()?.id,
+            selectedSceneId = form.selectedSceneId ?: catalog.scenes.firstOrNull()?.id,
+            currentInjectionSite = catalog.currentSite,
             loading = false,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DoseFormUiState())
@@ -99,6 +122,7 @@ class DoseFormViewModel(
             if (editUuid != null) {
                 loadExisting(editUuid)
             } else {
+                _form.update { it.copy(injectionSite = settings?.currentInjectionSite) }
                 prefillNightscout()
             }
         }
@@ -152,10 +176,18 @@ class DoseFormViewModel(
     fun setCarbsSj(text: String) = _form.update { it.copy(carbsSjText = text.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' }) }
     fun setCarbsGrams(text: String) = _form.update { it.copy(carbsGramsText = text.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' }) }
     fun setNote(text: String) = _form.update { it.copy(note = text.take(280)) }
-    fun setSite(site: InjectionSite?) = _form.update { it.copy(injectionSite = site) }
+    fun setSite(site: String?) = _form.update { it.copy(injectionSite = site) }
+    fun useCurrentSite() = _form.update { it.copy(injectionSite = it.currentInjectionSite) }
     fun setAdministeredAt(instant: Instant) = _form.update { it.copy(administeredAt = instant) }
     fun setNow() = _form.update { it.copy(administeredAt = Instant.now()) }
     fun dismissWarning() = _form.update { it.copy(warning = null, pendingSaveAfterWarning = false) }
+
+    fun markSelectedAsCurrent() {
+        val site = state.value.injectionSite ?: return
+        viewModelScope.launch {
+            catalogRepository.setCurrentInjectionSite(site)
+        }
+    }
 
     /** Predvyplní inzulín, dávku, scénu, SJ/g, miesto a poznámku. Čas = teraz; glykémiu nechá (NS). */
     fun applyFromRecent(dose: DoseRecord) {

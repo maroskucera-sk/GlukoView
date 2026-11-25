@@ -39,7 +39,7 @@ class DoseRepository(
             glucoseTrend = dose.glucoseTrend,
             carbsSj = dose.carbsSj,
             carbsGrams = dose.carbsGrams,
-            injectionSite = dose.injectionSite?.apiValue,
+            injectionSite = dose.injectionSite,
             note = dose.note,
             deletedAtEpochMs = null,
             updatedAtEpochMs = now,

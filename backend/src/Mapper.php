@@ -44,6 +44,18 @@ final class Mapper
         ];
     }
 
+    public static function injectionSite(array $r): array
+    {
+        return [
+            'id'          => (int) $r['id'],
+            'name'        => $r['name'],
+            'sort_order'  => (int) $r['sort_order'],
+            'is_archived' => (bool) $r['is_archived'],
+            'created_at'  => format_dt($r['created_at']),
+            'updated_at'  => format_dt($r['updated_at']),
+        ];
+    }
+
     public static function settings(array $r): array
     {
         return [
@@ -52,6 +64,7 @@ final class Mapper
             'basal_reminder_time'     => $r['basal_reminder_time'],
             'glucose_unit'            => $r['glucose_unit'],
             'duplicate_bolus_minutes' => (int) $r['duplicate_bolus_minutes'],
+            'current_injection_site'  => $r['current_injection_site'] ?? null,
             'updated_at'              => format_dt($r['updated_at']),
         ];
     }

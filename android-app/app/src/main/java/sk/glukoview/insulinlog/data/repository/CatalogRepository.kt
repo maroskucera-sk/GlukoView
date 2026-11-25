@@ -10,6 +10,7 @@ import sk.glukoview.insulinlog.data.remote.DtoMappers.toDomain
 import sk.glukoview.insulinlog.data.remote.DtoMappers.toEntity
 import sk.glukoview.insulinlog.domain.FamilySettings
 import sk.glukoview.insulinlog.domain.GlucoseUnit
+import sk.glukoview.insulinlog.domain.InjectionSite
 import sk.glukoview.insulinlog.domain.InsulinCategory
 import sk.glukoview.insulinlog.domain.InsulinType
 import sk.glukoview.insulinlog.domain.Profile
@@ -37,6 +38,12 @@ class CatalogRepository(
     fun observeAllScenes(): Flow<List<Scene>> =
         db.scenes().observeAll().map { list -> list.map { it.toDomain() } }
 
+    fun observeInjectionSites(): Flow<List<InjectionSite>> =
+        db.injectionSites().observeActive().map { list -> list.map { it.toDomain() } }
+
+    fun observeAllInjectionSites(): Flow<List<InjectionSite>> =
+        db.injectionSites().observeAll().map { list -> list.map { it.toDomain() } }
+
     fun observeSettings(): Flow<FamilySettings?> =
         db.settings().observe().map { it?.toDomain() }
 
@@ -56,6 +63,7 @@ class CatalogRepository(
         basalReminderTime: String?,
         glucoseUnit: GlucoseUnit,
         duplicateBolusMinutes: Int,
+        currentInjectionSite: String? = null,
     ): Result<FamilySettings> = runCatching {
         val body = mapOf(
             "nightscout_url" to nightscoutUrl,
@@ -63,11 +71,24 @@ class CatalogRepository(
             "basal_reminder_time" to basalReminderTime,
             "glucose_unit" to glucoseUnit.toApi(),
             "duplicate_bolus_minutes" to duplicateBolusMinutes,
+            "current_injection_site" to currentInjectionSite,
         )
         val response = api().putSettings(body)
         val entity = response.settings.toEntity()
         db.settings().upsert(entity)
         entity.toDomain()
+    }
+
+    suspend fun setCurrentInjectionSite(siteName: String?): Result<FamilySettings> = runCatching {
+        val current = getSettings()
+        saveSettings(
+            nightscoutUrl = current?.nightscoutUrl,
+            nightscoutToken = current?.nightscoutToken,
+            basalReminderTime = current?.basalReminderTime,
+            glucoseUnit = current?.glucoseUnit ?: GlucoseUnit.MMOL,
+            duplicateBolusMinutes = current?.duplicateBolusMinutes ?: 20,
+            currentInjectionSite = siteName,
+        ).getOrThrow()
     }
 
     suspend fun createInsulin(
@@ -168,6 +189,30 @@ class CatalogRepository(
         )
         val dto = response["scene"] ?: error("Server nevrátil scénu.")
         db.scenes().upsertAll(listOf(dto.toEntity()))
+        dto.toEntity().toDomain()
+    }
+
+    suspend fun createInjectionSite(name: String): Result<InjectionSite> = runCatching {
+        val response = api().createInjectionSite(mapOf("name" to name))
+        val dto = response["injection_site"] ?: error("Server nevrátil miesto vpichu.")
+        db.injectionSites().upsertAll(listOf(dto.toEntity()))
+        dto.toEntity().toDomain()
+    }
+
+    suspend fun updateInjectionSite(
+        id: Long,
+        name: String,
+        isArchived: Boolean,
+    ): Result<InjectionSite> = runCatching {
+        val response = api().updateInjectionSite(
+            id,
+            mapOf(
+                "name" to name,
+                "is_archived" to isArchived,
+            ),
+        )
+        val dto = response["injection_site"] ?: error("Server nevrátil miesto vpichu.")
+        db.injectionSites().upsertAll(listOf(dto.toEntity()))
         dto.toEntity().toDomain()
     }
 }

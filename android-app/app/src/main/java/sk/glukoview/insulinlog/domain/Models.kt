@@ -17,17 +17,13 @@ enum class InsulinCategory {
     fun toApi(): String = name.lowercase()
 }
 
-enum class InjectionSite(val apiValue: String) {
-    ABDOMEN("abdomen"),
-    THIGH("thigh"),
-    ARM("arm"),
-    BUTTOCK("buttock");
-
-    companion object {
-        fun fromApi(value: String?): InjectionSite? =
-            entries.firstOrNull { it.apiValue == value }
-    }
-}
+/** Katalógové miesto vpichu (Brucho, iPort, …). */
+data class InjectionSite(
+    val id: Long,
+    val name: String,
+    val sortOrder: Int,
+    val isArchived: Boolean,
+)
 
 enum class GlucoseUnit {
     MMOL,
@@ -82,6 +78,8 @@ data class FamilySettings(
     val basalReminderTime: String?,
     val glucoseUnit: GlucoseUnit,
     val duplicateBolusMinutes: Int,
+    /** Aktuálne nasadené miesto (napr. iPort na bruchu) — zdieľané v rodine. */
+    val currentInjectionSite: String? = null,
 )
 
 data class DoseRecord(
@@ -98,7 +96,8 @@ data class DoseRecord(
     val glucoseTrend: String?,
     val carbsSj: Double?,
     val carbsGrams: Double?,
-    val injectionSite: InjectionSite?,
+    /** Názov miesta vpichu (katalóg / legacy kľúč abdomen…). */
+    val injectionSite: String?,
     val note: String?,
     val deletedAt: Instant? = null,
     val syncPending: Boolean = false,

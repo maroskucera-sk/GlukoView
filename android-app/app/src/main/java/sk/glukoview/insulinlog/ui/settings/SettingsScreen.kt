@@ -66,6 +66,7 @@ fun SettingsScreen(
     var newInsulinBasal by remember { mutableStateOf(false) }
     var newScene by remember { mutableStateOf("") }
     var newProfile by remember { mutableStateOf("") }
+    var newSite by remember { mutableStateOf("") }
 
     LaunchedEffect(state.exportFile) {
         val file = state.exportFile ?: return@LaunchedEffect
@@ -290,6 +291,57 @@ fun SettingsScreen(
                         }
                     },
                 ) { Text("Pridať") }
+            }
+
+            Section("Miesta vpichu")
+            Text(
+                text = "Katalóg miest (Brucho, iPort, …). „Aktuálne nasadené“ je zdieľané v rodine — napr. kde máte teraz iPort.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            state.injectionSites.filter { !it.isArchived }.forEach { site ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    val isCurrent = state.currentInjectionSite.equals(site.name, ignoreCase = true)
+                    Text(
+                        text = if (isCurrent) "${site.name} · aktuálne" else site.name,
+                    )
+                    Row {
+                        if (!isCurrent) {
+                            TextButton(onClick = { vm.setCurrentInjectionSiteNow(site.name) }) {
+                                Text("Aktuálne")
+                            }
+                        }
+                        TextButton(onClick = { vm.archiveInjectionSite(site) }) {
+                            Text("Archivovať")
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = newSite,
+                    onValueChange = { newSite = it },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Nové miesto") },
+                    singleLine = true,
+                    placeholder = { Text("napr. iPort ľavé brucho") },
+                )
+                OutlinedButton(
+                    onClick = {
+                        if (newSite.isNotBlank()) {
+                            vm.addInjectionSite(newSite.trim())
+                            newSite = ""
+                        }
+                    },
+                ) { Text("Pridať") }
+            }
+            if (state.currentInjectionSite.isNotBlank()) {
+                TextButton(onClick = { vm.setCurrentInjectionSiteNow(null) }) {
+                    Text("Zrušiť aktuálne miesto (${state.currentInjectionSite})")
+                }
             }
 
             Section("Export pre diabetológa")

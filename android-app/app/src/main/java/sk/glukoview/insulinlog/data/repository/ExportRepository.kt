@@ -9,7 +9,6 @@ import sk.glukoview.insulinlog.data.local.AppDatabase
 import sk.glukoview.insulinlog.data.nightscout.NightscoutClient
 import sk.glukoview.insulinlog.domain.GlucoseUnit
 import sk.glukoview.insulinlog.domain.GlucoseUnits
-import sk.glukoview.insulinlog.domain.InjectionSite
 import sk.glukoview.insulinlog.domain.NightscoutReading
 import sk.glukoview.insulinlog.ui.util.Formatters
 import java.io.File
@@ -135,9 +134,7 @@ class ExportRepository(
             val i = insulins[d.insulinId]
             val s = d.sceneId?.let { scenes[it]?.name }.orEmpty()
             val cat = if (i?.category == "basal") "bazalny" else "rychly"
-            val site = d.injectionSite?.let { raw ->
-                InjectionSite.fromApi(raw)?.let { Formatters.siteLabel(it) } ?: raw
-            }.orEmpty()
+            val site = Formatters.siteLabel(d.injectionSite)
             val doseGly = d.glucoseValue?.toString().orEmpty()
             events += Event(
                 Instant.ofEpochMilli(d.administeredAtEpochMs),

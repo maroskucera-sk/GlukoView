@@ -20,14 +20,22 @@ require_once __DIR__ . '/Db.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Router.php';
 require_once __DIR__ . '/Mapper.php';
+require_once __DIR__ . '/SchemaMigrator.php';
 require_once __DIR__ . '/Controllers/AuthController.php';
 require_once __DIR__ . '/Controllers/SyncController.php';
 require_once __DIR__ . '/Controllers/DoseController.php';
 require_once __DIR__ . '/Controllers/InsulinController.php';
 require_once __DIR__ . '/Controllers/SceneController.php';
+require_once __DIR__ . '/Controllers/InjectionSiteController.php';
 require_once __DIR__ . '/Controllers/ProfileController.php';
 require_once __DIR__ . '/Controllers/SettingsController.php';
 require_once __DIR__ . '/Controllers/ExportController.php';
+
+try {
+    SchemaMigrator::run(Db::pdo());
+} catch (Throwable $e) {
+    error_log('SchemaMigrator: ' . $e->getMessage());
+}
 
 if (!empty($config['cors'])) {
     header('Access-Control-Allow-Origin: *');

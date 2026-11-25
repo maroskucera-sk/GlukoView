@@ -1,6 +1,7 @@
 package sk.glukoview.insulinlog.data.remote
 
 import sk.glukoview.insulinlog.data.local.DoseEntity
+import sk.glukoview.insulinlog.data.local.InjectionSiteEntity
 import sk.glukoview.insulinlog.data.local.InsulinEntity
 import sk.glukoview.insulinlog.data.local.ProfileEntity
 import sk.glukoview.insulinlog.data.local.SceneEntity
@@ -56,12 +57,21 @@ object DtoMappers {
         updatedAtEpochMs = parseInstant(updatedAt)?.toEpochMilli() ?: System.currentTimeMillis(),
     )
 
+    fun InjectionSiteDto.toEntity(): InjectionSiteEntity = InjectionSiteEntity(
+        id = id,
+        name = name,
+        sortOrder = sortOrder,
+        isArchived = isArchived,
+        updatedAtEpochMs = parseInstant(updatedAt)?.toEpochMilli() ?: System.currentTimeMillis(),
+    )
+
     fun SettingsDto.toEntity(): SettingsEntity = SettingsEntity(
         nightscoutUrl = nightscoutUrl,
         nightscoutToken = nightscoutToken,
         basalReminderTime = basalReminderTime,
         glucoseUnit = glucoseUnit ?: "mmol",
         duplicateBolusMinutes = duplicateBolusMinutes ?: 20,
+        currentInjectionSite = currentInjectionSite,
         updatedAtEpochMs = parseInstant(updatedAt)?.toEpochMilli() ?: System.currentTimeMillis(),
     )
 
@@ -94,12 +104,15 @@ object DtoMappers {
 
     fun SceneEntity.toDomain() = Scene(id, name, iconKey, sortOrder, isArchived)
 
+    fun InjectionSiteEntity.toDomain() = InjectionSite(id, name, sortOrder, isArchived)
+
     fun SettingsEntity.toDomain() = FamilySettings(
         nightscoutUrl = nightscoutUrl,
         nightscoutToken = nightscoutToken,
         basalReminderTime = basalReminderTime,
         glucoseUnit = GlucoseUnit.fromApi(glucoseUnit),
         duplicateBolusMinutes = duplicateBolusMinutes,
+        currentInjectionSite = currentInjectionSite,
     )
 
     fun DoseEntity.toDomain() = DoseRecord(
@@ -116,7 +129,7 @@ object DtoMappers {
         glucoseTrend = glucoseTrend,
         carbsSj = carbsSj,
         carbsGrams = carbsGrams,
-        injectionSite = InjectionSite.fromApi(injectionSite),
+        injectionSite = injectionSite,
         note = note,
         deletedAt = deletedAtEpochMs?.let(Instant::ofEpochMilli),
         syncPending = syncPending,
@@ -134,7 +147,7 @@ object DtoMappers {
         glucoseTrend = glucoseTrend,
         carbsSj = carbsSj,
         carbsGrams = carbsGrams,
-        injectionSite = injectionSite?.apiValue,
+        injectionSite = injectionSite,
         note = note,
     )
 }

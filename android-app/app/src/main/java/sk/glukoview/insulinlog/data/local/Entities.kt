@@ -36,6 +36,15 @@ data class SceneEntity(
     val updatedAtEpochMs: Long,
 )
 
+@Entity(tableName = "injection_sites")
+data class InjectionSiteEntity(
+    @PrimaryKey val id: Long,
+    val name: String,
+    val sortOrder: Int,
+    val isArchived: Boolean,
+    val updatedAtEpochMs: Long,
+)
+
 @Entity(
     tableName = "doses",
     indices = [
@@ -73,6 +82,7 @@ data class SettingsEntity(
     val basalReminderTime: String?,
     val glucoseUnit: String,
     val duplicateBolusMinutes: Int,
+    val currentInjectionSite: String? = null,
     val updatedAtEpochMs: Long,
 )
 

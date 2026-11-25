@@ -63,12 +63,16 @@ final class SettingsController
             Response::error('duplicate_bolus_minutes musí byť 0–180.', 422);
         }
 
+        $currentSite = array_key_exists('current_injection_site', $data)
+            ? optional_string($data['current_injection_site'], 80)
+            : ($existing['current_injection_site'] ?? null);
+
         Db::exec(
             'UPDATE family_settings SET
                 nightscout_url = ?, nightscout_token = ?, basal_reminder_time = ?,
-                glucose_unit = ?, duplicate_bolus_minutes = ?
+                glucose_unit = ?, duplicate_bolus_minutes = ?, current_injection_site = ?
              WHERE family_id = ?',
-            [$nsUrl, $nsToken, $basal, $gUnit, $dup, $fid]
+            [$nsUrl, $nsToken, $basal, $gUnit, $dup, $currentSite, $fid]
         );
 
         $row = Db::fetchOne('SELECT * FROM family_settings WHERE family_id = ?', [$fid]);

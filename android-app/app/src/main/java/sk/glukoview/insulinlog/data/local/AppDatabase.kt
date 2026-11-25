@@ -10,17 +10,19 @@ import androidx.room.RoomDatabase
         ProfileEntity::class,
         InsulinEntity::class,
         SceneEntity::class,
+        InjectionSiteEntity::class,
         DoseEntity::class,
         SettingsEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun profiles(): ProfileDao
     abstract fun insulins(): InsulinDao
     abstract fun scenes(): SceneDao
+    abstract fun injectionSites(): InjectionSiteDao
     abstract fun doses(): DoseDao
     abstract fun settings(): SettingsDao
     abstract fun syncMeta(): SyncMetaDao

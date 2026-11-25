@@ -55,6 +55,15 @@ data class SettingsDto(
     @SerializedName("basal_reminder_time") val basalReminderTime: String?,
     @SerializedName("glucose_unit") val glucoseUnit: String?,
     @SerializedName("duplicate_bolus_minutes") val duplicateBolusMinutes: Int?,
+    @SerializedName("current_injection_site") val currentInjectionSite: String? = null,
+    @SerializedName("updated_at") val updatedAt: String?,
+)
+
+data class InjectionSiteDto(
+    val id: Long,
+    val name: String,
+    @SerializedName("sort_order") val sortOrder: Int,
+    @SerializedName("is_archived") val isArchived: Boolean,
     @SerializedName("updated_at") val updatedAt: String?,
 )
 
@@ -82,6 +91,7 @@ data class SyncResponse(
     val profiles: List<ProfileDto> = emptyList(),
     val insulins: List<InsulinDto> = emptyList(),
     val scenes: List<SceneDto> = emptyList(),
+    @SerializedName("injection_sites") val injectionSites: List<InjectionSiteDto> = emptyList(),
     val doses: List<DoseDto> = emptyList(),
     val settings: SettingsDto?,
 )
@@ -115,4 +125,5 @@ data class ApiWarningDto(
 data class SettingsResponse(val settings: SettingsDto)
 data class InsulinsResponse(val insulins: List<InsulinDto>)
 data class ScenesResponse(val scenes: List<SceneDto>)
+data class InjectionSitesResponse(@SerializedName("injection_sites") val injectionSites: List<InjectionSiteDto>)
 data class ProfilesResponse(val profiles: List<ProfileDto>)

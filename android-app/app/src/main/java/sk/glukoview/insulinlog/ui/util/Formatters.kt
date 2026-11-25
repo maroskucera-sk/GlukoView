@@ -1,6 +1,5 @@
 package sk.glukoview.insulinlog.ui.util
 
-import sk.glukoview.insulinlog.domain.InjectionSite
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -62,10 +61,14 @@ object Formatters {
     fun endOfDay(date: LocalDate): Instant =
         date.plusDays(1).atStartOfDay(zone).toInstant()
 
-    fun siteLabel(site: InjectionSite): String = when (site) {
-        InjectionSite.ABDOMEN -> "Brucho"
-        InjectionSite.THIGH -> "Stehno"
-        InjectionSite.ARM -> "Rameno"
-        InjectionSite.BUTTOCK -> "Zadok"
+    fun siteLabel(site: String?): String {
+        if (site.isNullOrBlank()) return ""
+        return when (site.lowercase()) {
+            "abdomen" -> "Brucho"
+            "thigh" -> "Stehno"
+            "arm" -> "Rameno"
+            "buttock" -> "Zadok"
+            else -> site
+        }
     }
 }

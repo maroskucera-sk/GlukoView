@@ -19,6 +19,7 @@ import sk.glukoview.insulinlog.data.repository.ExportRepository
 import sk.glukoview.insulinlog.data.repository.SyncRepository
 import sk.glukoview.insulinlog.domain.FamilySettings
 import sk.glukoview.insulinlog.domain.GlucoseUnit
+import sk.glukoview.insulinlog.domain.InjectionSite
 import sk.glukoview.insulinlog.domain.InsulinCategory
 import sk.glukoview.insulinlog.domain.InsulinType
 import sk.glukoview.insulinlog.domain.Profile
@@ -33,11 +34,13 @@ data class SettingsUiState(
     val profiles: List<Profile> = emptyList(),
     val insulins: List<InsulinType> = emptyList(),
     val scenes: List<Scene> = emptyList(),
+    val injectionSites: List<InjectionSite> = emptyList(),
     val nightscoutUrl: String = "",
     val nightscoutToken: String = "",
     val basalReminderTime: String = "",
     val glucoseUnit: GlucoseUnit = GlucoseUnit.MMOL,
     val duplicateMinutes: String = "20",
+    val currentInjectionSite: String = "",
     val message: String? = null,
     val error: String? = null,
     val busy: Boolean = false,
@@ -62,42 +65,18 @@ class SettingsViewModel(
         val basalReminderTime: String = "",
         val glucoseUnit: GlucoseUnit = GlucoseUnit.MMOL,
         val duplicateMinutes: String = "20",
+        val currentInjectionSite: String = "",
         val hydrated: Boolean = false,
     )
 
     private data class Flash(val message: String? = null, val error: String? = null)
 
-    val state: StateFlow<SettingsUiState> = combine(
-        preferences.session,
-        catalogRepository.observeProfiles(),
-        catalogRepository.observeAllInsulins(),
-        catalogRepository.observeAllScenes(),
-        combine(_draft, _flash, _busy, _export, catalogRepository.observeSettings()) { draft, flash, busy, export, settings ->
-            DraftBundle(draft, flash, busy, export, settings)
-        },
-    ) { session, profiles, insulins, scenes, bundle ->
-        val draft = if (!bundle.draft.hydrated && bundle.settings != null) {
-            // one-shot hydrate via side effect is handled in init; here just display draft
-            bundle.draft
-        } else {
-            bundle.draft
-        }
-        SettingsUiState(
-            session = session,
-            profiles = profiles,
-            insulins = insulins,
-            scenes = scenes,
-            nightscoutUrl = draft.nightscoutUrl,
-            nightscoutToken = draft.nightscoutToken,
-            basalReminderTime = draft.basalReminderTime,
-            glucoseUnit = draft.glucoseUnit,
-            duplicateMinutes = draft.duplicateMinutes,
-            message = bundle.flash?.message,
-            error = bundle.flash?.error,
-            busy = bundle.busy,
-            exportFile = bundle.export,
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
+    private data class CatalogSlice(
+        val profiles: List<Profile>,
+        val insulins: List<InsulinType>,
+        val scenes: List<Scene>,
+        val injectionSites: List<InjectionSite>,
+    )
 
     private data class DraftBundle(
         val draft: SettingsDraft,
@@ -106,6 +85,40 @@ class SettingsViewModel(
         val export: File?,
         val settings: FamilySettings?,
     )
+
+    val state: StateFlow<SettingsUiState> = combine(
+        preferences.session,
+        combine(
+            catalogRepository.observeProfiles(),
+            catalogRepository.observeAllInsulins(),
+            catalogRepository.observeAllScenes(),
+            catalogRepository.observeAllInjectionSites(),
+        ) { profiles, insulins, scenes, sites ->
+            CatalogSlice(profiles, insulins, scenes, sites)
+        },
+        combine(_draft, _flash, _busy, _export, catalogRepository.observeSettings()) { draft, flash, busy, export, settings ->
+            DraftBundle(draft, flash, busy, export, settings)
+        },
+    ) { session, catalog, bundle ->
+        val draft = bundle.draft
+        SettingsUiState(
+            session = session,
+            profiles = catalog.profiles,
+            insulins = catalog.insulins,
+            scenes = catalog.scenes,
+            injectionSites = catalog.injectionSites,
+            nightscoutUrl = draft.nightscoutUrl,
+            nightscoutToken = draft.nightscoutToken,
+            basalReminderTime = draft.basalReminderTime,
+            glucoseUnit = draft.glucoseUnit,
+            duplicateMinutes = draft.duplicateMinutes,
+            currentInjectionSite = draft.currentInjectionSite,
+            message = bundle.flash?.message,
+            error = bundle.flash?.error,
+            busy = bundle.busy,
+            exportFile = bundle.export,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     init {
         viewModelScope.launch {
@@ -117,8 +130,15 @@ class SettingsViewModel(
                         basalReminderTime = settings.basalReminderTime.orEmpty(),
                         glucoseUnit = settings.glucoseUnit,
                         duplicateMinutes = settings.duplicateBolusMinutes.toString(),
+                        currentInjectionSite = settings.currentInjectionSite.orEmpty(),
                         hydrated = true,
                     )
+                } else if (settings != null && _draft.value.hydrated) {
+                    // sync current site from server if draft wasn't dirty for it
+                    val remote = settings.currentInjectionSite.orEmpty()
+                    if (_draft.value.currentInjectionSite != remote) {
+                        _draft.update { it.copy(currentInjectionSite = remote) }
+                    }
                 }
             }
         }
@@ -129,6 +149,21 @@ class SettingsViewModel(
     fun setBasalTime(v: String) = _draft.update { it.copy(basalReminderTime = v) }
     fun setGlucoseUnit(u: GlucoseUnit) = _draft.update { it.copy(glucoseUnit = u) }
     fun setDuplicateMinutes(v: String) = _draft.update { it.copy(duplicateMinutes = v.filter { ch -> ch.isDigit() }) }
+    fun setCurrentInjectionSiteDraft(v: String) = _draft.update { it.copy(currentInjectionSite = v) }
+
+    fun setCurrentInjectionSiteNow(name: String?) {
+        viewModelScope.launch {
+            _draft.update { it.copy(currentInjectionSite = name.orEmpty()) }
+            catalogRepository.setCurrentInjectionSite(name?.ifBlank { null })
+                .onSuccess {
+                    _flash.value = Flash(
+                        message = if (name.isNullOrBlank()) "Aktuálne miesto zrušené."
+                        else "Aktuálne miesto: $name",
+                    )
+                }
+                .onFailure { e -> _flash.value = Flash(error = e.message) }
+        }
+    }
 
     fun setTheme(mode: ThemeMode) {
         viewModelScope.launch { preferences.setTheme(mode) }
@@ -181,6 +216,7 @@ class SettingsViewModel(
                 basalReminderTime = d.basalReminderTime.ifBlank { null },
                 glucoseUnit = d.glucoseUnit,
                 duplicateBolusMinutes = d.duplicateMinutes.toIntOrNull() ?: 20,
+                currentInjectionSite = d.currentInjectionSite.ifBlank { null },
             ).onSuccess {
                 _flash.value = Flash(message = "Nastavenia uložené.")
             }.onFailure { e ->
@@ -241,6 +277,25 @@ class SettingsViewModel(
     fun archiveScene(scene: Scene) {
         viewModelScope.launch {
             catalogRepository.updateScene(scene.id, scene.name, scene.iconKey, isArchived = true)
+        }
+    }
+
+    fun addInjectionSite(name: String) {
+        viewModelScope.launch {
+            catalogRepository.createInjectionSite(name.trim())
+                .onSuccess {
+                    _flash.value = Flash(message = "Miesto „${name.trim()}“ pridané.")
+                    syncRepository.syncNow()
+                }
+                .onFailure { e -> _flash.value = Flash(error = e.message) }
+        }
+    }
+
+    fun archiveInjectionSite(site: InjectionSite) {
+        viewModelScope.launch {
+            catalogRepository.updateInjectionSite(site.id, site.name, isArchived = true)
+                .onSuccess { syncRepository.syncNow() }
+                .onFailure { e -> _flash.value = Flash(error = e.message) }
         }
     }
 

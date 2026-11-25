@@ -55,6 +55,15 @@ interface InsulinLogApi {
     @PATCH("api/v1/scenes/{id}")
     suspend fun updateScene(@Path("id") id: Long, @Body body: Map<String, @JvmSuppressWildcards Any?>): Map<String, SceneDto>
 
+    @GET("api/v1/injection-sites")
+    suspend fun listInjectionSites(@Query("include_archived") includeArchived: Boolean = false): InjectionSitesResponse
+
+    @POST("api/v1/injection-sites")
+    suspend fun createInjectionSite(@Body body: Map<String, @JvmSuppressWildcards Any?>): Map<String, InjectionSiteDto>
+
+    @PATCH("api/v1/injection-sites/{id}")
+    suspend fun updateInjectionSite(@Path("id") id: Long, @Body body: Map<String, @JvmSuppressWildcards Any?>): Map<String, InjectionSiteDto>
+
     @GET("api/v1/profiles")
     suspend fun listProfiles(): ProfilesResponse
 

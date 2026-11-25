@@ -72,6 +72,22 @@ CREATE TABLE IF NOT EXISTS scenes (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS injection_sites (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  family_id     BIGINT UNSIGNED NOT NULL,
+  name          VARCHAR(80)     NOT NULL,
+  sort_order    SMALLINT        NOT NULL DEFAULT 0,
+  is_archived   TINYINT(1)      NOT NULL DEFAULT 0,
+  created_at    DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at    DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                  ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_injection_sites_family (family_id, is_archived, sort_order),
+  CONSTRAINT fk_injection_sites_family
+    FOREIGN KEY (family_id) REFERENCES families (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS family_settings (
   family_id              BIGINT UNSIGNED NOT NULL,
   nightscout_url         VARCHAR(512)    NULL,
@@ -79,6 +95,7 @@ CREATE TABLE IF NOT EXISTS family_settings (
   basal_reminder_time    CHAR(5)         NULL,
   glucose_unit           ENUM('mmol', 'mgdl') NOT NULL DEFAULT 'mmol',
   duplicate_bolus_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 20,
+  current_injection_site VARCHAR(80)     NULL,
   updated_at             DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
                            ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (family_id),
@@ -101,7 +118,7 @@ CREATE TABLE IF NOT EXISTS dose_records (
   glucose_trend     VARCHAR(16)     NULL,
   carbs_sj          DECIMAL(5,1)    NULL,
   carbs_grams       DECIMAL(6,1)    NULL,
-  injection_site    ENUM('abdomen', 'thigh', 'arm', 'buttock') NULL,
+  injection_site    VARCHAR(80)     NULL,
   note              VARCHAR(280)    NULL,
   created_at        DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at        DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3)

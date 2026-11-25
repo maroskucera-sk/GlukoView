@@ -108,6 +108,14 @@ try {
         foreach ($scenes as $s) {
             $ss->execute([$familyId, $s[0], $s[1], $s[2]]);
         }
+
+        $sites = ['Brucho', 'Stehno', 'Rameno', 'Zadok', 'iPort'];
+        $siteIns = $pdo->prepare(
+            'INSERT INTO injection_sites (family_id, name, sort_order) VALUES (?, ?, ?)'
+        );
+        foreach ($sites as $i => $name) {
+            $siteIns->execute([$familyId, $name, $i + 1]);
+        }
     }
 
     $pdo->commit();

@@ -257,20 +257,34 @@ fun AddDoseScreen(
             }
 
             SectionLabel(stringResource(R.string.injection_site))
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                InjectionSite.entries.forEach { site ->
+            if (!state.currentInjectionSite.isNullOrBlank()) {
+                Text(
+                    text = "Aktuálne nasadené: ${Formatters.siteLabel(state.currentInjectionSite)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = state.injectionSite == site,
-                        onClick = {
-                            vm.setSite(if (state.injectionSite == site) null else site)
-                        },
-                        label = { Text(Formatters.siteLabel(site)) },
+                        selected = state.injectionSite == state.currentInjectionSite,
+                        onClick = vm::useCurrentSite,
+                        label = { Text("Použiť aktuálne") },
                     )
+                    if (!state.injectionSite.isNullOrBlank() &&
+                        state.injectionSite != state.currentInjectionSite
+                    ) {
+                        FilterChip(
+                            selected = false,
+                            onClick = vm::markSelectedAsCurrent,
+                            label = { Text("Nastav ako aktuálne") },
+                        )
+                    }
                 }
             }
+            SiteDropdown(
+                sites = state.injectionSites,
+                selectedName = state.injectionSite,
+                onSelect = vm::setSite,
+            )
 
             SectionLabel(stringResource(R.string.note))
             OutlinedTextField(
@@ -429,6 +443,67 @@ private fun SceneDropdown(
                     text = { Text(scene.name) },
                     onClick = {
                         onSelect(scene.id)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SiteDropdown(
+    sites: List<InjectionSite>,
+    selectedName: String?,
+    onSelect: (String?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val label = when {
+        selectedName.isNullOrBlank() -> "Bez miesta"
+        else -> Formatters.siteLabel(selectedName)
+    }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = label,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .menuAnchor()
+                .fillMaxWidth(),
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            singleLine = true,
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text("Bez miesta") },
+                onClick = {
+                    onSelect(null)
+                    expanded = false
+                },
+            )
+            sites.forEach { site ->
+                DropdownMenuItem(
+                    text = { Text(site.name) },
+                    onClick = {
+                        onSelect(site.name)
+                        expanded = false
+                    },
+                )
+            }
+            // Legacy hodnoty (abdomen…) ak ešte nie sú v katalógu
+            if (!selectedName.isNullOrBlank() && sites.none { it.name.equals(selectedName, true) }) {
+                DropdownMenuItem(
+                    text = { Text(Formatters.siteLabel(selectedName)) },
+                    onClick = {
+                        onSelect(selectedName)
                         expanded = false
                     },
                 )

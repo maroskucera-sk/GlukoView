@@ -3,8 +3,6 @@ declare(strict_types=1);
 
 final class DoseController
 {
-    private const SITES = ['abdomen', 'thigh', 'arm', 'buttock'];
-
     /** GET /api/v1/doses?from=&to=&limit= */
     public static function list(): void
     {
@@ -71,10 +69,7 @@ final class DoseController
         Auth::assertInsulin($fid, $insulinId);
         Auth::assertScene($fid, $sceneId);
 
-        $site = optional_string($data['injection_site'] ?? null, 20);
-        if ($site !== null && !in_array($site, self::SITES, true)) {
-            Response::error('Neplatné injection_site.', 422);
-        }
+        $site = optional_string($data['injection_site'] ?? null, 80);
 
         $fields = self::optionalDoseFields($data);
         $existing = self::find($fid, $uuid, includeDeleted: true);
@@ -150,11 +145,8 @@ final class DoseController
         Auth::assertScene($fid, $sceneId, allowArchived: true);
 
         $site = array_key_exists('injection_site', $data)
-            ? optional_string($data['injection_site'], 20)
+            ? optional_string($data['injection_site'], 80)
             : $row['injection_site'];
-        if ($site !== null && !in_array($site, self::SITES, true)) {
-            Response::error('Neplatné injection_site.', 422);
-        }
 
         $merged = array_merge($row, $data);
         $fields = self::optionalDoseFields($merged);

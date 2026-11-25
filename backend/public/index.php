@@ -43,6 +43,10 @@ $router->add('GET',   '/api/v1/scenes', [SceneController::class, 'list']);
 $router->add('POST',  '/api/v1/scenes', [SceneController::class, 'create']);
 $router->add('PATCH', '/api/v1/scenes/{id}', [SceneController::class, 'update']);
 
+$router->add('GET',   '/api/v1/injection-sites', [InjectionSiteController::class, 'list']);
+$router->add('POST',  '/api/v1/injection-sites', [InjectionSiteController::class, 'create']);
+$router->add('PATCH', '/api/v1/injection-sites/{id}', [InjectionSiteController::class, 'update']);
+
 $router->add('GET',   '/api/v1/profiles', [ProfileController::class, 'list']);
 $router->add('POST',  '/api/v1/profiles', [ProfileController::class, 'create']);
 $router->add('PATCH', '/api/v1/profiles/{id}', [ProfileController::class, 'update']);

@@ -52,6 +52,9 @@ class SyncRepository(
         if (remote.scenes.isNotEmpty()) {
             db.scenes().upsertAll(remote.scenes.map { it.toEntity() })
         }
+        if (remote.injectionSites.isNotEmpty()) {
+            db.injectionSites().upsertAll(remote.injectionSites.map { it.toEntity() })
+        }
         remote.settings?.let { db.settings().upsert(it.toEntity()) }
 
         if (remote.doses.isNotEmpty()) {
