@@ -20,11 +20,12 @@ Na server skopírujte celý priečinok `backend/`.
 
 ```
 backend/
-├── public/          ← webroot (index.php, .htaccess)
-├── src/             ← mimo webu
-├── config/          ← mimo webu (tu bude config.php)
-├── schema.sql       ← demo + seed
-├── schema_empty.sql ← len tabuľky (produkcia)
+├── public/             ← webroot (index.php, install.php, .htaccess)
+├── src/                ← mimo webu
+├── config/             ← mimo webu (tu bude config.php)
+├── schema.sql          ← demo + seed
+├── schema_empty.sql    ← len tabuľky (+ CREATE DATABASE)
+├── schema_webhost.sql  ← len tabuľky pre shared hosting (Websupport)
 └── tools/
 ```
 
@@ -158,3 +159,5 @@ Bez `since` = snapshot (posledných 500 dávok). S `since` = zmeny `updated_at` 
 - **Subdoména** `insulin.vasadomena.sk` → root na `…/public`.
 - Ak nemôžete zmeniť document root: nahrajte obsah `public/` do `public_html/insulin/` a zvyšok (`src`, `config`) o úroveň vyššie; upravte `require` cesty v `index.php` len ak je to nevyhnutné. Odporúčané je vždy oddelený vhost/subdoména.
 - MariaDB: `DATETIME(3)` a `CHECK` sú OK na 10.5+; pri staršej verzii odstráňte `CHECK` constraint zo schémy.
+- **Websupport:** podrobný návod bez SSH → [`docs/insulin-log/NASADENIE-WEBSUPPORT.md`](../docs/insulin-log/NASADENIE-WEBSUPPORT.md).
+- **Bez SSH:** po nahratí súborov otvorte `https://VAS-DOMAIN/install.php` (jednorazový inštalátor vytvorí `config.php`, tabuľky a rodinu). Potom **zmažte** `public/install.php`. Schéma pre shared hosting: `schema_webhost.sql` (bez `CREATE DATABASE`).
