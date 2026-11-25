@@ -42,3 +42,12 @@ wordpress/
 # Webové návody (Dexcom, Libre, Guardian, Syai, ovládanie) nepatria do verejného repozitára.
 docs/web/
 
+
+# --- Insulin Log (Android / PHP) ---
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+android-app/*.iml
+android-app/.idea/
+backend/config/config.php
