@@ -58,6 +58,12 @@ interface InsulinLogApi {
     @GET("api/v1/profiles")
     suspend fun listProfiles(): ProfilesResponse
 
+    @POST("api/v1/profiles")
+    suspend fun createProfile(@Body body: Map<String, @JvmSuppressWildcards Any?>): Map<String, ProfileDto>
+
+    @PATCH("api/v1/profiles/{id}")
+    suspend fun updateProfile(@Path("id") id: Long, @Body body: Map<String, @JvmSuppressWildcards Any?>): Map<String, ProfileDto>
+
     @GET("api/v1/settings")
     suspend fun getSettings(): SettingsResponse
 

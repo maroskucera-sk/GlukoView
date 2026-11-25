@@ -112,6 +112,37 @@ class CatalogRepository(
         dto.toEntity().toDomain()
     }
 
+    suspend fun createProfile(name: String, colorHex: String = "#4CAF50"): Result<Profile> = runCatching {
+        val response = api().createProfile(
+            mapOf(
+                "name" to name,
+                "color_hex" to colorHex,
+            ),
+        )
+        val dto = response["profile"] ?: error("Server nevrátil profil.")
+        db.profiles().upsertAll(listOf(dto.toEntity()))
+        dto.toEntity().toDomain()
+    }
+
+    suspend fun updateProfile(
+        id: Long,
+        name: String,
+        colorHex: String,
+        isActive: Boolean,
+    ): Result<Profile> = runCatching {
+        val response = api().updateProfile(
+            id,
+            mapOf(
+                "name" to name,
+                "color_hex" to colorHex,
+                "is_active" to isActive,
+            ),
+        )
+        val dto = response["profile"] ?: error("Server nevrátil profil.")
+        db.profiles().upsertAll(listOf(dto.toEntity()))
+        dto.toEntity().toDomain()
+    }
+
     suspend fun createScene(name: String, iconKey: String): Result<Scene> = runCatching {
         val response = api().createScene(
             mapOf("name" to name, "icon_key" to iconKey),

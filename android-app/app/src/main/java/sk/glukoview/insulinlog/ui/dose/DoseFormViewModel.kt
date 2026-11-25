@@ -53,6 +53,8 @@ data class DoseFormUiState(
     val error: String? = null,
     val saved: Boolean = false,
     val existingDoses: List<DoseRecord> = emptyList(),
+    /** Posledných 10 dávok (celá rodina) na rýchle opakovanie. */
+    val recentForRepeat: List<DoseRecord> = emptyList(),
 )
 
 class DoseFormViewModel(
@@ -77,6 +79,7 @@ class DoseFormViewModel(
             scenes = scenes,
             profiles = profiles.associateBy { it.id },
             existingDoses = doses,
+            recentForRepeat = if (form.isEdit) emptyList() else doses.take(10),
             selectedInsulinId = form.selectedInsulinId ?: insulins.firstOrNull()?.id,
             selectedSceneId = form.selectedSceneId ?: scenes.firstOrNull()?.id,
             loading = false,
@@ -153,6 +156,26 @@ class DoseFormViewModel(
     fun setAdministeredAt(instant: Instant) = _form.update { it.copy(administeredAt = instant) }
     fun setNow() = _form.update { it.copy(administeredAt = Instant.now()) }
     fun dismissWarning() = _form.update { it.copy(warning = null, pendingSaveAfterWarning = false) }
+
+    /** Predvyplní inzulín, dávku, scénu, SJ/g, miesto a poznámku. Čas = teraz; glykémiu nechá (NS). */
+    fun applyFromRecent(dose: DoseRecord) {
+        _form.update {
+            it.copy(
+                selectedInsulinId = dose.insulinId,
+                selectedSceneId = dose.sceneId,
+                unitsText = formatUnitsField(dose.units),
+                administeredAt = Instant.now(),
+                carbsSjText = dose.carbsSj?.let { v -> formatUnitsField(v) }.orEmpty(),
+                carbsGramsText = dose.carbsGrams?.let { v -> formatUnitsField(v) }.orEmpty(),
+                injectionSite = dose.injectionSite,
+                note = dose.note.orEmpty(),
+                error = null,
+            )
+        }
+    }
+
+    private fun formatUnitsField(value: Double): String =
+        if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
 
     fun save(force: Boolean = false) {
         viewModelScope.launch {

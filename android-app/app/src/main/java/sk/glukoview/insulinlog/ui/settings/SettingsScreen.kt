@@ -65,6 +65,7 @@ fun SettingsScreen(
     var newInsulin by remember { mutableStateOf("") }
     var newInsulinBasal by remember { mutableStateOf(false) }
     var newScene by remember { mutableStateOf("") }
+    var newProfile by remember { mutableStateOf("") }
 
     LaunchedEffect(state.exportFile) {
         val file = state.exportFile ?: return@LaunchedEffect
@@ -95,7 +96,12 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Section("Profil")
+            Section("Rodina — kto zapisuje")
+            Text(
+                text = "Vyber aktívny profil na tomto telefóne. Nového člena pridáš nižšie — uvidia ho všetky zariadenia po synci.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -107,6 +113,38 @@ fun SettingsScreen(
                         label = { Text(profile.name) },
                     )
                 }
+            }
+            state.profiles.forEach { profile ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(profile.name, style = MaterialTheme.typography.bodyLarge)
+                    if (state.session.profileId != profile.id) {
+                        TextButton(onClick = { vm.deactivateProfile(profile) }) {
+                            Text("Deaktivovať")
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = newProfile,
+                    onValueChange = { newProfile = it },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Nový člen rodiny") },
+                    singleLine = true,
+                    placeholder = { Text("napr. Mama") },
+                )
+                OutlinedButton(
+                    onClick = {
+                        if (newProfile.isNotBlank()) {
+                            vm.addProfile(newProfile.trim())
+                            newProfile = ""
+                        }
+                    },
+                    enabled = !state.busy,
+                ) { Text("Pridať") }
             }
 
             Section("Vzhľad")

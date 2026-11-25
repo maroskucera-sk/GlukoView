@@ -138,6 +138,39 @@ class SettingsViewModel(
         viewModelScope.launch { authRepository.selectProfile(id) }
     }
 
+    fun addProfile(name: String) {
+        viewModelScope.launch {
+            _busy.value = true
+            val colors = listOf("#1976D2", "#C2185B", "#7B1FA2", "#00897B", "#F57C00", "#5D4037", "#455A64")
+            val color = colors[state.value.profiles.size % colors.size]
+            catalogRepository.createProfile(name.trim(), color)
+                .onSuccess {
+                    _flash.value = Flash(message = "Profil „${name.trim()}“ pridaný. Po synci ho uvidia aj ostatné zariadenia.")
+                    syncRepository.syncNow()
+                }
+                .onFailure { e ->
+                    _flash.value = Flash(error = e.message ?: "Profil sa nepodarilo pridať.")
+                }
+            _busy.value = false
+        }
+    }
+
+    fun deactivateProfile(profile: Profile) {
+        viewModelScope.launch {
+            catalogRepository.updateProfile(
+                id = profile.id,
+                name = profile.name,
+                colorHex = profile.colorHex,
+                isActive = false,
+            ).onSuccess {
+                _flash.value = Flash(message = "Profil „${profile.name}“ deaktivovaný.")
+                syncRepository.syncNow()
+            }.onFailure { e ->
+                _flash.value = Flash(error = e.message)
+            }
+        }
+    }
+
     fun saveFamilySettings() {
         viewModelScope.launch {
             _busy.value = true

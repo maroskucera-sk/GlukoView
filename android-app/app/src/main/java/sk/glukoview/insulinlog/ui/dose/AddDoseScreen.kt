@@ -2,6 +2,7 @@ package sk.glukoview.insulinlog.ui.dose
 
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -18,35 +20,50 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import sk.glukoview.insulinlog.R
 import sk.glukoview.insulinlog.di.AppContainer
+import sk.glukoview.insulinlog.domain.DoseRecord
 import sk.glukoview.insulinlog.domain.InjectionSite
 import sk.glukoview.insulinlog.domain.InsulinCategory
+import sk.glukoview.insulinlog.domain.InsulinType
+import sk.glukoview.insulinlog.domain.Profile
+import sk.glukoview.insulinlog.domain.Scene
 import sk.glukoview.insulinlog.ui.util.Formatters
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
@@ -130,28 +147,37 @@ fun AddDoseScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            SectionLabel(stringResource(R.string.insulin_bolus) + " / " + stringResource(R.string.insulin_basal))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                state.insulins.forEach { insulin ->
-                    FilterChip(
-                        selected = state.selectedInsulinId == insulin.id,
-                        onClick = { vm.selectInsulin(insulin.id) },
-                        label = {
-                            Text(
-                                "${insulin.name} · ${
-                                    if (insulin.category == InsulinCategory.BASAL) "bazál"
-                                    else "bolus"
-                                }",
-                            )
-                        },
-                    )
+            if (!state.isEdit && state.recentForRepeat.isNotEmpty()) {
+                SectionLabel("Rýchle opakovanie")
+                Text(
+                    text = "Posledných ${state.recentForRepeat.size} dávok — ťuknutím predvyplníš formulár (čas = teraz).",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    state.recentForRepeat.forEach { dose ->
+                        RecentDoseChip(
+                            dose = dose,
+                            insulin = state.insulins.firstOrNull { it.id == dose.insulinId },
+                            scene = state.scenes.firstOrNull { it.id == dose.sceneId },
+                            profile = state.profiles[dose.profileId],
+                            onClick = { vm.applyFromRecent(dose) },
+                        )
+                    }
                 }
             }
+
+            SectionLabel(stringResource(R.string.insulin_bolus) + " / " + stringResource(R.string.insulin_basal))
+            InsulinDropdown(
+                insulins = state.insulins,
+                selectedId = state.selectedInsulinId,
+                onSelect = vm::selectInsulin,
+            )
 
             SectionLabel(stringResource(R.string.units))
             Row(
@@ -179,62 +205,21 @@ fun AddDoseScreen(
             }
 
             SectionLabel(stringResource(R.string.scene))
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                state.scenes.forEach { scene ->
-                    FilterChip(
-                        selected = state.selectedSceneId == scene.id,
-                        onClick = { vm.selectScene(scene.id) },
-                        label = { Text(scene.name) },
-                    )
-                }
-            }
+            SceneDropdown(
+                scenes = state.scenes,
+                selectedId = state.selectedSceneId,
+                onSelect = vm::selectScene,
+            )
 
             SectionLabel(stringResource(R.string.time))
-            val context = LocalContext.current
-            val zone = ZoneId.systemDefault()
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(Formatters.localDateTime(state.administeredAt), modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = vm::setNow) { Text("Teraz") }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        val zdt = state.administeredAt.atZone(zone)
-                        DatePickerDialog(
-                            context,
-                            { _, y, m, d ->
-                                val updated = zdt.withYear(y).withMonth(m + 1).withDayOfMonth(d).toInstant()
-                                vm.setAdministeredAt(updated)
-                            },
-                            zdt.year,
-                            zdt.monthValue - 1,
-                            zdt.dayOfMonth,
-                        ).show()
-                    },
-                ) { Text("Dátum") }
-                OutlinedButton(
-                    onClick = {
-                        val zdt = state.administeredAt.atZone(zone)
-                        TimePickerDialog(
-                            context,
-                            { _, hour, minute ->
-                                vm.setAdministeredAt(zdt.withHour(hour).withMinute(minute).withSecond(0).toInstant())
-                            },
-                            zdt.hour,
-                            zdt.minute,
-                            true,
-                        ).show()
-                    },
-                ) { Text("Čas") }
-                OutlinedButton(
-                    onClick = {
-                        vm.setAdministeredAt(state.administeredAt.minus(15, ChronoUnit.MINUTES))
-                    },
-                ) { Text("-15 min") }
-            }
+            TimeBlock(
+                administeredAt = state.administeredAt,
+                onNow = vm::setNow,
+                onMinus15 = {
+                    vm.setAdministeredAt(state.administeredAt.minus(15, ChronoUnit.MINUTES))
+                },
+                onPick = vm::setAdministeredAt,
+            )
 
             SectionLabel(stringResource(R.string.glucose))
             OutlinedTextField(
@@ -317,4 +302,207 @@ fun AddDoseScreen(
 @Composable
 private fun SectionLabel(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium)
+}
+
+@Composable
+private fun RecentDoseChip(
+    dose: DoseRecord,
+    insulin: InsulinType?,
+    scene: Scene?,
+    profile: Profile?,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        tonalElevation = 2.dp,
+        modifier = Modifier.widthIn(min = 140.dp, max = 200.dp),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                text = "${Formatters.units(dose.units)} · ${insulin?.name ?: "?"}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = listOfNotNull(
+                    scene?.name,
+                    Formatters.relative(dose.administeredAt),
+                    profile?.name,
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InsulinDropdown(
+    insulins: List<InsulinType>,
+    selectedId: Long?,
+    onSelect: (Long) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = insulins.firstOrNull { it.id == selectedId }
+    val label = selected?.let {
+        "${it.name} · ${if (it.category == InsulinCategory.BASAL) "bazál" else "bolus"}"
+    }.orEmpty()
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = label.ifBlank { "Vyber inzulín" },
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .menuAnchor()
+                .fillMaxWidth(),
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            singleLine = true,
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            insulins.forEach { insulin ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "${insulin.name} · ${
+                                if (insulin.category == InsulinCategory.BASAL) "bazál" else "bolus"
+                            }",
+                        )
+                    },
+                    onClick = {
+                        onSelect(insulin.id)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SceneDropdown(
+    scenes: List<Scene>,
+    selectedId: Long?,
+    onSelect: (Long?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = scenes.firstOrNull { it.id == selectedId }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = selected?.name ?: "Bez scény",
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .menuAnchor()
+                .fillMaxWidth(),
+            trailingIcon = {
+                Icon(Icons.Default.ExpandMore, contentDescription = null)
+            },
+            singleLine = true,
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text("Bez scény") },
+                onClick = {
+                    onSelect(null)
+                    expanded = false
+                },
+            )
+            scenes.forEach { scene ->
+                DropdownMenuItem(
+                    text = { Text(scene.name) },
+                    onClick = {
+                        onSelect(scene.id)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimeBlock(
+    administeredAt: java.time.Instant,
+    onNow: () -> Unit,
+    onMinus15: () -> Unit,
+    onPick: (java.time.Instant) -> Unit,
+) {
+    val context = LocalContext.current
+    val zone = ZoneId.systemDefault()
+
+    fun openPickers() {
+        val zdt = administeredAt.atZone(zone)
+        DatePickerDialog(
+            context,
+            { _, y, m, d ->
+                val afterDate = zdt.withYear(y).withMonth(m + 1).withDayOfMonth(d)
+                TimePickerDialog(
+                    context,
+                    { _, hour, minute ->
+                        onPick(
+                            afterDate.withHour(hour).withMinute(minute).withSecond(0).toInstant(),
+                        )
+                    },
+                    afterDate.hour,
+                    afterDate.minute,
+                    true,
+                ).show()
+            },
+            zdt.year,
+            zdt.monthValue - 1,
+            zdt.dayOfMonth,
+        ).show()
+    }
+
+    OutlinedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = ::openPickers),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                Icons.Default.Schedule,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = Formatters.localDateTime(administeredAt),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Ťukni pre výber dátumu a času",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(selected = false, onClick = onNow, label = { Text("Teraz") })
+        FilterChip(selected = false, onClick = onMinus15, label = { Text("−15 min") })
+    }
 }
