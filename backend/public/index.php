@@ -1,7 +1,9 @@
 <?php
 declare(strict_types=1);
 
-require_once dirname(__DIR__) . '/src/bootstrap.php';
+/** @var string $appRoot */
+$appRoot = require __DIR__ . '/_app_root.php';
+require_once $appRoot . '/src/bootstrap.php';
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 

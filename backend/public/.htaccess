@@ -1,14 +1,31 @@
-# Apache: document root = backend/public/
+# Document root = tento priečinok (Websupport: sub/insulin/)
 <IfModule mod_rewrite.c>
     RewriteEngine On
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L,QSA]
 </IfModule>
 
-# Zakáž listing
 Options -Indexes
 
-# Bezpečnostné hlavičky (voliteľné)
+# Flat layout: SQL a interný helper nie cez HTTP
+<FilesMatch "(?i)\.(sql)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+<Files "_app_root.php">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Deny from all
+    </IfModule>
+</Files>
+
 <IfModule mod_headers.c>
     Header set X-Content-Type-Options "nosniff"
 </IfModule>

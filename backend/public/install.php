@@ -11,9 +11,10 @@ declare(strict_types=1);
 header('Content-Type: text/html; charset=utf-8');
 header('X-Robots-Tag: noindex, nofollow');
 
-$rootDir   = dirname(__DIR__);
-$configDir = $rootDir . '/config';
-$lockFile  = $configDir . '/install.lock';
+/** @var string $rootDir */
+$rootDir    = require __DIR__ . '/_app_root.php';
+$configDir  = $rootDir . '/config';
+$lockFile   = $configDir . '/install.lock';
 $configFile = $configDir . '/config.php';
 $schemaFile = $rootDir . '/schema_webhost.sql';
 
@@ -24,7 +25,7 @@ $apiBaseHint = guessApiBase();
 if (is_file($lockFile) || (is_file($configFile) && !isset($_GET['force']))) {
     renderPage(
         'Inštalácia je už hotová',
-        '<p>API je nainštalované. <strong>Zmažte súbor <code>public/install.php</code></strong> cez FTP.</p>'
+        '<p>API je nainštalované. <strong>Zmažte súbor <code>install.php</code></strong> cez FTP.</p>'
         . '<p>Overenie: <a href="' . h($apiBaseHint) . '/api/v1/health">' . h($apiBaseHint) . '/api/v1/health</a></p>',
         [],
         null,
@@ -348,7 +349,7 @@ function renderPage(string $title, ?string $body, array $errors, ?array $success
         echo '<div class="ok"><strong>Hotovo.</strong> Rodina #' . (int) $success['family_id']
             . ' „' . h($success['family_name']) . '“ je pripravená.</div>';
         echo '<ol>';
-        echo '<li><strong>Ihneď zmažte</strong> súbor <code>public/install.php</code> cez FTP / WebAdmin File Manager.</li>';
+        echo '<li><strong>Ihneď zmažte</strong> súbor <code>install.php</code> cez FTP / WebAdmin File Manager.</li>';
         echo '<li>V Android aplikácii nastavte:<br>URL: <code>' . h($success['api_base'])
             . '</code><br>Kľúč: <code>' . h($success['access_key']) . '</code></li>';
         echo '<li>Overenie API: <a href="' . h($success['api_base']) . '/api/v1/health">'
