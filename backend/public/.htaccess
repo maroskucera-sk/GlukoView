@@ -1,0 +1,14 @@
+# Apache: document root = backend/public/
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [L,QSA]
+</IfModule>
+
+# Zakáž listing
+Options -Indexes
+
+# Bezpečnostné hlavičky (voliteľné)
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+</IfModule>

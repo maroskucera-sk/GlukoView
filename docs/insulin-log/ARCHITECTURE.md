@@ -79,10 +79,13 @@ zostávajúce = units * max(0, 1 - elapsed_hours / duration_hours)
 | Pripomienka bazálu         | Klient podľa `basal_reminder_time` |
 | Soft delete záznamov       | Server `deleted_at` pre sync |
 
-## Plánované API (krok 2)
+## API (krok 2 — implementované)
+
+Podrobnosti a nasadenie: `backend/README.md`.
 
 | Metóda | Cesta                         | Účel                          |
 |--------|-------------------------------|-------------------------------|
+| GET    | `/api/v1/health`              | Healthcheck                   |
 | POST   | `/api/v1/auth/verify`         | Overenie kľúča + zoznam profilov |
 | GET    | `/api/v1/sync`                | Delta sync                    |
 | GET/POST/PATCH/DELETE | `/api/v1/doses`  | Záznamy inzulínu              |
