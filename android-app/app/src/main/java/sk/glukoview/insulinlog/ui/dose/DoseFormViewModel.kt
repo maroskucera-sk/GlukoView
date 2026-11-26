@@ -25,6 +25,7 @@ import sk.glukoview.insulinlog.domain.InjectionSite
 import sk.glukoview.insulinlog.domain.InsulinType
 import sk.glukoview.insulinlog.domain.Profile
 import sk.glukoview.insulinlog.domain.Scene
+import sk.glukoview.insulinlog.domain.SceneSelection
 import java.time.Instant
 import java.util.UUID
 
@@ -39,6 +40,8 @@ data class DoseFormUiState(
     val profiles: Map<Long, Profile> = emptyMap(),
     val selectedInsulinId: Long? = null,
     val selectedSceneId: Long? = null,
+    /** true = používateľ / load / repeat už nastavil scénu (aj na null = Bez scény). */
+    val sceneUserSet: Boolean = false,
     val unitsText: String = "1",
     val administeredAt: Instant = Instant.now(),
     val glucoseText: String = "",
@@ -96,6 +99,13 @@ class DoseFormViewModel(
             )
         },
     ) { form, catalog ->
+        val sceneId = SceneSelection.resolve(
+            selectedSceneId = form.selectedSceneId,
+            sceneUserSet = form.sceneUserSet,
+            isEdit = form.isEdit,
+            firstSceneId = catalog.scenes.firstOrNull()?.id,
+        )
+
         form.copy(
             insulins = catalog.insulins,
             scenes = catalog.scenes,
@@ -104,7 +114,7 @@ class DoseFormViewModel(
             existingDoses = catalog.doses,
             recentForRepeat = if (form.isEdit) emptyList() else catalog.doses.take(10),
             selectedInsulinId = form.selectedInsulinId ?: catalog.insulins.firstOrNull()?.id,
-            selectedSceneId = form.selectedSceneId ?: catalog.scenes.firstOrNull()?.id,
+            selectedSceneId = sceneId,
             currentInjectionSite = catalog.currentSite,
             loading = false,
         )
@@ -136,6 +146,7 @@ class DoseFormViewModel(
                 uuid = dose.uuid,
                 selectedInsulinId = dose.insulinId,
                 selectedSceneId = dose.sceneId,
+                sceneUserSet = true,
                 unitsText = dose.units.toString(),
                 administeredAt = dose.administeredAt,
                 glucoseText = dose.glucoseValue?.toString().orEmpty(),
@@ -177,7 +188,7 @@ class DoseFormViewModel(
     }
 
     fun selectInsulin(id: Long) = _form.update { it.copy(selectedInsulinId = id, error = null) }
-    fun selectScene(id: Long?) = _form.update { it.copy(selectedSceneId = id) }
+    fun selectScene(id: Long?) = _form.update { it.copy(selectedSceneId = id, sceneUserSet = true) }
     fun setUnits(text: String) = _form.update { it.copy(unitsText = text.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' }) }
     fun nudgeUnits(delta: Double) {
         val current = _form.value.unitsText.replace(',', '.').toDoubleOrNull() ?: 0.0
@@ -189,7 +200,10 @@ class DoseFormViewModel(
     fun setCarbsGrams(text: String) = _form.update { it.copy(carbsGramsText = text.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' }) }
     fun setNote(text: String) = _form.update { it.copy(note = text.take(280)) }
     fun setSite(site: String?) = _form.update { it.copy(injectionSite = site) }
-    fun useCurrentSite() = _form.update { it.copy(injectionSite = it.currentInjectionSite) }
+    fun useCurrentSite() {
+        val site = state.value.currentInjectionSite
+        _form.update { it.copy(injectionSite = site) }
+    }
     fun setAdministeredAt(instant: Instant) = _form.update { it.copy(administeredAt = instant) }
     fun setNow() = _form.update { it.copy(administeredAt = Instant.now()) }
     fun dismissWarning() = _form.update { it.copy(warning = null, pendingSaveAfterWarning = false) }
@@ -198,6 +212,9 @@ class DoseFormViewModel(
         val site = state.value.injectionSite ?: return
         viewModelScope.launch {
             catalogRepository.setCurrentInjectionSite(site)
+                .onSuccess { saved ->
+                    _form.update { it.copy(currentInjectionSite = saved.currentInjectionSite) }
+                }
         }
     }
 
@@ -207,6 +224,7 @@ class DoseFormViewModel(
             it.copy(
                 selectedInsulinId = dose.insulinId,
                 selectedSceneId = dose.sceneId,
+                sceneUserSet = true,
                 unitsText = formatUnitsField(dose.units),
                 administeredAt = Instant.now(),
                 carbsSjText = dose.carbsSj?.let { v -> formatUnitsField(v) }.orEmpty(),
