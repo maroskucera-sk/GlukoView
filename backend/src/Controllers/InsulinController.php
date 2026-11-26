@@ -33,7 +33,7 @@ final class InsulinController
             Response::error('color_hex musí byť #RRGGBB.', 422);
         }
 
-        $duration = optional_float($data['duration_hours'] ?? ($category === 'bolus' ? 4.0 : 24.0));
+        $duration = optional_float($data['duration_hours'] ?? ($category === 'bolus' ? 5.0 : 24.0));
         if ($duration === null || $duration <= 0 || $duration > 48) {
             Response::error('duration_hours musí byť v rozsahu 0–48.', 422);
         }

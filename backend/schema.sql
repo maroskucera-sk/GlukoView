@@ -179,9 +179,9 @@ INSERT INTO profiles (family_id, name, color_hex, sort_order) VALUES
   (1, 'Melinka',   '#7B1FA2', 3);
 
 INSERT INTO insulins (family_id, name, category, color_hex, duration_hours, sort_order) VALUES
-  (1, 'NovoRapid',  'bolus', '#E53935', 4.00, 1),
-  (1, 'Fiasp',      'bolus', '#FB8C00', 3.50, 2),
-  (1, 'Tresiba',    'basal', '#1E88E5', 24.00, 3),
+  (1, 'NovoRapid',  'bolus', '#E53935', 5.00, 1),
+  (1, 'Fiasp',      'bolus', '#FB8C00', 4.50, 2),
+  (1, 'Tresiba',    'basal', '#1E88E5', 42.00, 3),
   (1, 'Lantus',     'basal', '#43A047', 24.00, 4);
 
 INSERT INTO scenes (family_id, name, icon_key, sort_order) VALUES

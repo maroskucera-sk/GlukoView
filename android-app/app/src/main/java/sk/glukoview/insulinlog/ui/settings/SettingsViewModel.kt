@@ -20,7 +20,9 @@ import sk.glukoview.insulinlog.data.repository.SyncRepository
 import sk.glukoview.insulinlog.domain.FamilySettings
 import sk.glukoview.insulinlog.domain.GlucoseUnit
 import sk.glukoview.insulinlog.domain.InjectionSite
+import sk.glukoview.insulinlog.domain.InsulinCatalog
 import sk.glukoview.insulinlog.domain.InsulinCategory
+import sk.glukoview.insulinlog.domain.InsulinPreset
 import sk.glukoview.insulinlog.domain.InsulinType
 import sk.glukoview.insulinlog.domain.Profile
 import sk.glukoview.insulinlog.domain.Scene
@@ -237,16 +239,33 @@ class SettingsViewModel(
         }
     }
 
-    fun addInsulin(name: String, category: InsulinCategory) {
+    fun addInsulin(
+        name: String,
+        category: InsulinCategory,
+        durationHours: Double? = null,
+        colorHex: String? = null,
+        preset: InsulinPreset? = null,
+    ) {
         viewModelScope.launch {
             _busy.value = true
+            val fromCatalog = preset ?: InsulinCatalog.findByName(name)
+            val duration = durationHours
+                ?: fromCatalog?.durationHours
+                ?: InsulinCatalog.defaultDuration(category)
+            val color = colorHex
+                ?: fromCatalog?.colorHex
+                ?: if (category == InsulinCategory.BASAL) "#1E88E5" else "#E53935"
             catalogRepository.createInsulin(
-                name = name,
-                category = category,
-                colorHex = if (category == InsulinCategory.BASAL) "#1E88E5" else "#E53935",
-                durationHours = if (category == InsulinCategory.BASAL) 24.0 else 4.0,
+                name = name.trim(),
+                category = fromCatalog?.category ?: category,
+                colorHex = color,
+                durationHours = duration.coerceIn(0.5, 48.0),
             ).onSuccess {
-                _flash.value = Flash(message = "Inzulín pridaný.")
+                val tip = fromCatalog?.let { p ->
+                    val peak = p.peakMinutes?.let { " · vrchol ~${it} min" }.orEmpty()
+                    " (${p.durationHours}h$peak)"
+                }.orEmpty()
+                _flash.value = Flash(message = "Inzulín pridaný$tip.")
             }.onFailure { e ->
                 _flash.value = Flash(error = e.message)
             }

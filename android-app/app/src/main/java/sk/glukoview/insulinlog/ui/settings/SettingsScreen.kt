@@ -14,9 +14,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -42,7 +47,9 @@ import sk.glukoview.insulinlog.R
 import sk.glukoview.insulinlog.data.repository.DoctorExportFormat
 import sk.glukoview.insulinlog.di.AppContainer
 import sk.glukoview.insulinlog.domain.GlucoseUnit
+import sk.glukoview.insulinlog.domain.InsulinCatalog
 import sk.glukoview.insulinlog.domain.InsulinCategory
+import sk.glukoview.insulinlog.domain.InsulinPreset
 import sk.glukoview.insulinlog.domain.ThemeMode
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -62,11 +69,21 @@ fun SettingsScreen(
     )
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var newInsulin by remember { mutableStateOf("") }
-    var newInsulinBasal by remember { mutableStateOf(false) }
+    var insulinPresetId by remember { mutableStateOf<String?>(InsulinCatalog.presets.firstOrNull()?.id) }
+    var newInsulin by remember { mutableStateOf(InsulinCatalog.presets.firstOrNull()?.name.orEmpty()) }
+    var newInsulinBasal by remember {
+        mutableStateOf(InsulinCatalog.presets.firstOrNull()?.category == InsulinCategory.BASAL)
+    }
+    var newInsulinDuration by remember {
+        mutableStateOf(
+            InsulinCatalog.presets.firstOrNull()?.durationHours?.let { formatHours(it) } ?: "5",
+        )
+    }
+    var insulinMenuExpanded by remember { mutableStateOf(false) }
     var newScene by remember { mutableStateOf("") }
     var newProfile by remember { mutableStateOf("") }
     var newSite by remember { mutableStateOf("") }
+    val selectedPreset = insulinPresetId?.let { id -> InsulinCatalog.presets.firstOrNull { it.id == id } }
 
     LaunchedEffect(state.exportFile) {
         val file = state.exportFile ?: return@LaunchedEffect
@@ -217,7 +234,14 @@ fun SettingsScreen(
             ) { Text("Uložiť nastavenia rodiny") }
 
             Section("Inzulíny")
+            Text(
+                text = "Dĺžka pôsobenia sa predvyplní z katalógu značiek (SmPC / klinické tabuľky). Môžete ju upraviť.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             state.insulins.filter { !it.isArchived }.forEach { insulin ->
+                val catalogHint = InsulinCatalog.findByName(insulin.name)
+                val peak = catalogHint?.peakMinutes?.let { " · vrchol ~${it}′" }.orEmpty()
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -225,39 +249,133 @@ fun SettingsScreen(
                     Text(
                         "${insulin.name} · ${
                             if (insulin.category == InsulinCategory.BASAL) "bazál" else "bolus"
-                        } · ${insulin.durationHours}h",
+                        } · ${formatHours(insulin.durationHours)}h$peak",
+                        modifier = Modifier.weight(1f),
                     )
                     TextButton(onClick = { vm.archiveInsulin(insulin) }) {
                         Text("Archivovať")
                     }
                 }
             }
+            ExposedDropdownMenuBox(
+                expanded = insulinMenuExpanded,
+                onExpandedChange = { insulinMenuExpanded = it },
+            ) {
+                OutlinedTextField(
+                    value = selectedPreset?.let { presetLabel(it) } ?: "Vlastný…",
+                    onValueChange = {},
+                    readOnly = true,
+                    modifier = Modifier
+                        .menuAnchor()
+                        .fillMaxWidth(),
+                    label = { Text("Zo zoznamu") },
+                    trailingIcon = {
+                        Icon(Icons.Default.ExpandMore, contentDescription = null)
+                    },
+                    singleLine = true,
+                )
+                ExposedDropdownMenu(
+                    expanded = insulinMenuExpanded,
+                    onDismissRequest = { insulinMenuExpanded = false },
+                ) {
+                    InsulinCatalog.presets.forEach { preset ->
+                        DropdownMenuItem(
+                            text = { Text(presetLabel(preset)) },
+                            onClick = {
+                                insulinPresetId = preset.id
+                                newInsulin = preset.name
+                                newInsulinBasal = preset.category == InsulinCategory.BASAL
+                                newInsulinDuration = formatHours(preset.durationHours)
+                                insulinMenuExpanded = false
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Vlastný…") },
+                        onClick = {
+                            insulinPresetId = null
+                            newInsulin = ""
+                            newInsulinDuration = formatHours(
+                                InsulinCatalog.defaultDuration(
+                                    if (newInsulinBasal) InsulinCategory.BASAL else InsulinCategory.BOLUS,
+                                ),
+                            )
+                            insulinMenuExpanded = false
+                        },
+                    )
+                }
+            }
+            if (insulinPresetId == null) {
+                OutlinedTextField(
+                    value = newInsulin,
+                    onValueChange = { typed ->
+                        newInsulin = typed
+                        InsulinCatalog.findByName(typed)?.let { match ->
+                            newInsulinBasal = match.category == InsulinCategory.BASAL
+                            newInsulinDuration = formatHours(match.durationHours)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Názov inzulínu") },
+                    singleLine = true,
+                )
+            }
             OutlinedTextField(
-                value = newInsulin,
-                onValueChange = { newInsulin = it },
+                value = newInsulinDuration,
+                onValueChange = { newInsulinDuration = it.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' } },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Nový inzulín") },
+                label = { Text("Dĺžka pôsobenia (hodiny)") },
+                supportingText = {
+                    val peak = selectedPreset?.peakMinutes
+                    Text(
+                        when {
+                            peak != null -> "Katalóg: vrchol ~$peak min · ${selectedPreset?.genericName.orEmpty()}"
+                            selectedPreset != null -> "Katalóg: ${selectedPreset.genericName}"
+                            else -> "Orientačné DIA pre IOB (0,5–48 h)"
+                        },
+                    )
+                },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 FilterChip(
                     selected = !newInsulinBasal,
-                    onClick = { newInsulinBasal = false },
+                    onClick = {
+                        newInsulinBasal = false
+                        if (insulinPresetId == null && newInsulin.isBlank()) {
+                            newInsulinDuration = formatHours(InsulinCatalog.defaultDuration(InsulinCategory.BOLUS))
+                        }
+                    },
                     label = { Text("Bolus") },
+                    enabled = insulinPresetId == null,
                 )
                 FilterChip(
                     selected = newInsulinBasal,
-                    onClick = { newInsulinBasal = true },
+                    onClick = {
+                        newInsulinBasal = true
+                        if (insulinPresetId == null && newInsulin.isBlank()) {
+                            newInsulinDuration = formatHours(InsulinCatalog.defaultDuration(InsulinCategory.BASAL))
+                        }
+                    },
                     label = { Text("Bazál") },
+                    enabled = insulinPresetId == null,
                 )
                 OutlinedButton(
                     onClick = {
-                        if (newInsulin.isNotBlank()) {
+                        val duration = newInsulinDuration.replace(',', '.').toDoubleOrNull()
+                        if (newInsulin.isNotBlank() && duration != null && duration > 0) {
                             vm.addInsulin(
-                                newInsulin.trim(),
-                                if (newInsulinBasal) InsulinCategory.BASAL else InsulinCategory.BOLUS,
+                                name = newInsulin.trim(),
+                                category = if (newInsulinBasal) InsulinCategory.BASAL else InsulinCategory.BOLUS,
+                                durationHours = duration,
+                                colorHex = selectedPreset?.colorHex,
+                                preset = selectedPreset,
                             )
-                            newInsulin = ""
+                            // po pridaní nechaj rovnaký preset (ľahké opakované pridanie inej značky)
                         }
                     },
                 ) { Text("Pridať") }
@@ -403,4 +521,12 @@ private fun Section(title: String) {
         style = MaterialTheme.typography.titleLarge,
         modifier = Modifier.padding(top = 8.dp),
     )
+}
+
+private fun formatHours(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
+
+private fun presetLabel(preset: InsulinPreset): String {
+    val kind = if (preset.category == InsulinCategory.BASAL) "bazál" else "bolus"
+    return "${preset.name} · $kind · ${formatHours(preset.durationHours)}h"
 }

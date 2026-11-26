@@ -242,10 +242,11 @@ function runSqlFile(PDO $pdo, string $path): void
 
 function seedDefaults(PDO $pdo, int $familyId): void
 {
+    // Orientačné DIA podľa katalógu (SmPC / klinické tabuľky) — zhodné s Android InsulinCatalog
     $insulins = [
-        ['NovoRapid', 'bolus', '#E53935', 4.00, 1],
-        ['Fiasp', 'bolus', '#FB8C00', 3.50, 2],
-        ['Tresiba', 'basal', '#1E88E5', 24.00, 3],
+        ['NovoRapid', 'bolus', '#E53935', 5.00, 1],
+        ['Fiasp', 'bolus', '#FB8C00', 4.50, 2],
+        ['Tresiba', 'basal', '#1E88E5', 42.00, 3],
         ['Lantus', 'basal', '#43A047', 24.00, 4],
     ];
     $is = $pdo->prepare(
