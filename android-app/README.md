@@ -17,7 +17,7 @@ Jazyk UI: **slovenčina** · Dark Mode (systém / svetlá / tmavá)
 | Režim | Správanie |
 |-------|-----------|
 | **Dashboard** | Stiahne len aktuálne 1–2 merania. CGM históriu **neukladá**. |
-| **Zápis dávky** | Predvyplní aktuálnu G (+ trend); uloží sa len pri dávke. |
+| **Zápis dávky** | Pri čase „teraz“ predvyplní aktuálnu G; pri spätnom čase najbližšiu G z NS k tomu momentu. Tlačidlo **NS** = vždy aktuálna. |
 | **Export pre lekára** | On-demand stiahne CGM za obdobie z Nightscoutu a **zlúči s inzulínom** do jedného CSV/PDF. |
 
 Zdroj pravdy pre CGM ostáva Nightscout (žiadna duplicitná archívna DB v telefóne).

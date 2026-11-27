@@ -9,9 +9,11 @@ import sk.glukoview.insulinlog.BuildConfig
 import sk.glukoview.insulinlog.domain.GlucoseTrend
 import sk.glukoview.insulinlog.domain.GlucoseUnit
 import sk.glukoview.insulinlog.domain.GlucoseUnits
+import sk.glukoview.insulinlog.domain.NightscoutGlucosePicker
 import sk.glukoview.insulinlog.domain.NightscoutReading
 import java.time.Duration
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
 
@@ -62,6 +64,31 @@ class NightscoutClient {
         raw.mapNotNull { it.toReading() }
             .filter { !it.date.isBefore(from) && !it.date.isAfter(to) }
             .sortedBy { it.date }
+    }
+
+    /**
+     * Najbližšie CGM meranie k [at] (okno ±[windowMinutes], pri prázdne rozšírenie na ±60).
+     * Pre „teraz“ radšej použite [fetchLatest].
+     */
+    suspend fun fetchClosestTo(
+        baseUrl: String,
+        tokenOrSecret: String?,
+        at: Instant,
+        windowMinutes: Long = 20,
+    ): Result<NightscoutReading> {
+        return try {
+            suspend fun load(minutes: Long): List<NightscoutReading> {
+                val from = at.minus(minutes, ChronoUnit.MINUTES)
+                val to = at.plus(minutes, ChronoUnit.MINUTES)
+                return fetchRange(baseUrl, tokenOrSecret, from, to).getOrElse { emptyList() }
+            }
+            val near = load(windowMinutes).ifEmpty { load(60) }
+            val reading = NightscoutGlucosePicker.closest(near, at)
+                ?: error("Nightscout nemá meranie okolo zvoleného času.")
+            Result.success(reading)
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
     }
 
     fun formatAge(reading: NightscoutReading, now: Instant = Instant.now()): String {

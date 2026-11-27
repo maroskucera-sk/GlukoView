@@ -23,9 +23,12 @@ import sk.glukoview.insulinlog.domain.GlucoseUnit
 import sk.glukoview.insulinlog.domain.GlucoseUnits
 import sk.glukoview.insulinlog.domain.InjectionSite
 import sk.glukoview.insulinlog.domain.InsulinType
+import sk.glukoview.insulinlog.domain.NightscoutGlucosePicker
+import sk.glukoview.insulinlog.domain.NightscoutReading
 import sk.glukoview.insulinlog.domain.Profile
 import sk.glukoview.insulinlog.domain.Scene
 import sk.glukoview.insulinlog.domain.SceneSelection
+import sk.glukoview.insulinlog.ui.util.Formatters
 import java.time.Instant
 import java.util.UUID
 
@@ -47,6 +50,8 @@ data class DoseFormUiState(
     val glucoseText: String = "",
     val glucoseUnit: GlucoseUnit = GlucoseUnit.MMOL,
     val glucoseTrend: String? = null,
+    /** Popis zdroja G z NS (aktuálne / spätne k času dávky). */
+    val glucoseSourceHint: String? = null,
     val carbsSjText: String = "",
     val carbsGramsText: String = "",
     val injectionSite: String? = null,
@@ -134,7 +139,8 @@ class DoseFormViewModel(
                 loadExisting(editUuid)
             } else {
                 _form.update { it.copy(injectionSite = settings?.currentInjectionSite) }
-                prefillNightscout()
+                // Nová dávka s časom „teraz“ → aktuálna G z NS
+                fillGlucoseFromNightscout(at = Instant.now(), forceLatest = true)
             }
         }
     }
@@ -161,30 +167,58 @@ class DoseFormViewModel(
         }
     }
 
-    private suspend fun prefillNightscout() {
+    /**
+     * Glykémiu z NS: pri [forceLatest] / čase blízko teraz → aktuálne;
+     * inak najbližší bod k [at] (spätný zápis).
+     */
+    private suspend fun fillGlucoseFromNightscout(at: Instant, forceLatest: Boolean) {
         val settings = catalogRepository.getSettings() ?: return
         val url = settings.nightscoutUrl ?: return
-        _form.update { it.copy(glucoseRefreshing = true) }
-        nightscout.fetchLatest(url, settings.nightscoutToken)
-            .onSuccess { (latest, _) ->
-                val value = GlucoseUnits.convert(latest.sgvMgdl, GlucoseUnit.MGDL, settings.glucoseUnit)
+        _form.update { it.copy(glucoseRefreshing = true, glucoseSourceHint = null) }
+        val useLatest = forceLatest || NightscoutGlucosePicker.isNearNow(at)
+        val result: Result<NightscoutReading> = if (useLatest) {
+            nightscout.fetchLatest(url, settings.nightscoutToken).map { it.first }
+        } else {
+            nightscout.fetchClosestTo(url, settings.nightscoutToken, at)
+        }
+        result
+            .onSuccess { reading ->
+                val value = GlucoseUnits.convert(reading.sgvMgdl, GlucoseUnit.MGDL, settings.glucoseUnit)
+                val hint = if (useLatest) {
+                    "NS aktuálne (${Formatters.localTime(reading.date)})"
+                } else {
+                    "NS k času dávky (${Formatters.localDateTime(reading.date)})"
+                }
                 _form.update {
                     it.copy(
                         glucoseText = GlucoseUnits.format(value, settings.glucoseUnit),
                         glucoseUnit = settings.glucoseUnit,
-                        glucoseTrend = latest.directionRaw,
+                        glucoseTrend = reading.directionRaw,
+                        glucoseSourceHint = hint,
                         glucoseRefreshing = false,
                     )
                 }
             }
-            .onFailure {
-                _form.update { it.copy(glucoseRefreshing = false) }
+            .onFailure { e ->
+                _form.update {
+                    it.copy(
+                        glucoseRefreshing = false,
+                        glucoseSourceHint = e.message ?: "Nightscout nedostupný",
+                    )
+                }
             }
     }
 
-    /** Znova stiahne aktuálnu glykémiu z Nightscoutu do poľa. */
+    /** Tlačidlo NS — vždy aktuálna glykémia (nie k času dávky). */
     fun refreshGlucoseFromNightscout() {
-        viewModelScope.launch { prefillNightscout() }
+        viewModelScope.launch { fillGlucoseFromNightscout(at = Instant.now(), forceLatest = true) }
+    }
+
+    /** Doplní G z NS podľa času dávky na formulári (spätne alebo teraz). */
+    fun refreshGlucoseForAdministeredAt() {
+        viewModelScope.launch {
+            fillGlucoseFromNightscout(at = state.value.administeredAt, forceLatest = false)
+        }
     }
 
     fun selectInsulin(id: Long) = _form.update { it.copy(selectedInsulinId = id, error = null) }
@@ -204,8 +238,22 @@ class DoseFormViewModel(
         val site = state.value.currentInjectionSite
         _form.update { it.copy(injectionSite = site) }
     }
-    fun setAdministeredAt(instant: Instant) = _form.update { it.copy(administeredAt = instant) }
-    fun setNow() = _form.update { it.copy(administeredAt = Instant.now()) }
+    fun setAdministeredAt(instant: Instant) {
+        _form.update { it.copy(administeredAt = instant) }
+        // Spätný zápis → G z NS k tomu času; blízko teraz → aktuálna
+        viewModelScope.launch {
+            fillGlucoseFromNightscout(at = instant, forceLatest = false)
+        }
+    }
+
+    fun setNow() {
+        val now = Instant.now()
+        _form.update { it.copy(administeredAt = now) }
+        viewModelScope.launch {
+            fillGlucoseFromNightscout(at = now, forceLatest = true)
+        }
+    }
+
     fun dismissWarning() = _form.update { it.copy(warning = null, pendingSaveAfterWarning = false) }
 
     fun markSelectedAsCurrent() {
@@ -218,21 +266,25 @@ class DoseFormViewModel(
         }
     }
 
-    /** Predvyplní inzulín, dávku, scénu, SJ/g, miesto a poznámku. Čas = teraz; glykémiu nechá (NS). */
+    /** Predvyplní inzulín, dávku, scénu, SJ/g, miesto a poznámku. Čas = teraz; G z aktuálneho NS. */
     fun applyFromRecent(dose: DoseRecord) {
+        val now = Instant.now()
         _form.update {
             it.copy(
                 selectedInsulinId = dose.insulinId,
                 selectedSceneId = dose.sceneId,
                 sceneUserSet = true,
                 unitsText = formatUnitsField(dose.units),
-                administeredAt = Instant.now(),
+                administeredAt = now,
                 carbsSjText = dose.carbsSj?.let { v -> formatUnitsField(v) }.orEmpty(),
                 carbsGramsText = dose.carbsGrams?.let { v -> formatUnitsField(v) }.orEmpty(),
                 injectionSite = dose.injectionSite,
                 note = dose.note.orEmpty(),
                 error = null,
             )
+        }
+        viewModelScope.launch {
+            fillGlucoseFromNightscout(at = now, forceLatest = true)
         }
     }
 

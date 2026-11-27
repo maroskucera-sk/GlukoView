@@ -237,8 +237,10 @@ fun AddDoseScreen(
                         Text(if (state.glucoseUnit.name == "MMOL") "mmol/L" else "mg/dL")
                     },
                     supportingText = {
+                        val hint = state.glucoseSourceHint
                         when {
                             state.glucoseRefreshing -> Text("Načítavam z Nightscoutu…")
+                            !hint.isNullOrBlank() -> Text(hint)
                             state.glucoseTrend != null -> Text("Trend: ${state.glucoseTrend}")
                         }
                     },
@@ -250,6 +252,11 @@ fun AddDoseScreen(
                     Text(if (state.glucoseRefreshing) "…" else "NS")
                 }
             }
+            Text(
+                text = "Pri zmene času sa G doplní z NS k tomu momentu. Tlačidlo NS = vždy aktuálna.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             SectionLabel(stringResource(R.string.carbs))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
