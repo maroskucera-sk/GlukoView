@@ -102,7 +102,7 @@ fun HistoryScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            text = "Súhrn: rýchly ${Formatters.units(group.bolusTotal)} · " +
+                            text = "${group.doses.size} dávok · bolus ${Formatters.units(group.bolusTotal)} · " +
                                 "bazál ${Formatters.units(group.basalTotal)}",
                             modifier = Modifier.padding(12.dp),
                             style = MaterialTheme.typography.bodyMedium,

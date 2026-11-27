@@ -4,9 +4,12 @@
     <string name="medical_disclaimer">Toto nie je zdravotnícka pomôcka. Hodnoty overujte na senzore alebo glukomere.</string>
 
     <string name="nav_dashboard">Prehľad</string>
+    <string name="nav_chart">Graf</string>
     <string name="nav_history">História</string>
     <string name="nav_settings">Nastavenia</string>
     <string name="nav_add_dose">Pridať záznam</string>
+    <string name="today_summary">Dnes</string>
+    <string name="open_chart">Otvoriť graf</string>
 
     <string name="onboarding_title">Prihlásenie do rodiny</string>
     <string name="onboarding_server_url">URL servera</string>

@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.first
 import sk.glukoview.insulinlog.R
 import sk.glukoview.insulinlog.data.local.SessionPrefs
 import sk.glukoview.insulinlog.di.AppContainer
+import sk.glukoview.insulinlog.ui.glychart.ChartScreen
 import sk.glukoview.insulinlog.ui.dashboard.DashboardScreen
 import sk.glukoview.insulinlog.ui.dose.AddDoseScreen
 import sk.glukoview.insulinlog.ui.history.HistoryScreen
@@ -62,7 +64,12 @@ fun AppNavHost(container: AppContainer) {
 
     val backStack by navController.currentBackStackEntryAsState()
     val current = backStack?.destination?.route
-    val showChrome = current in setOf(Routes.DASHBOARD, Routes.HISTORY, Routes.SETTINGS)
+    val showChrome = current in setOf(
+        Routes.DASHBOARD,
+        Routes.CHART,
+        Routes.HISTORY,
+        Routes.SETTINGS,
+    )
 
     Scaffold(
         bottomBar = {
@@ -73,6 +80,12 @@ fun AppNavHost(container: AppContainer) {
                         onClick = { navController.navigateTop(Routes.DASHBOARD) },
                         icon = { Icon(Icons.Default.Home, contentDescription = null) },
                         label = { Text(stringResource(R.string.nav_dashboard)) },
+                    )
+                    NavigationBarItem(
+                        selected = current == Routes.CHART,
+                        onClick = { navController.navigateTop(Routes.CHART) },
+                        icon = { Icon(Icons.Filled.ShowChart, contentDescription = null) },
+                        label = { Text(stringResource(R.string.nav_chart)) },
                     )
                     NavigationBarItem(
                         selected = current == Routes.HISTORY,
@@ -90,7 +103,7 @@ fun AppNavHost(container: AppContainer) {
             }
         },
         floatingActionButton = {
-            if (current == Routes.DASHBOARD || current == Routes.HISTORY) {
+            if (current == Routes.DASHBOARD || current == Routes.HISTORY || current == Routes.CHART) {
                 FloatingActionButton(onClick = { navController.navigate(Routes.ADD_DOSE) }) {
                     Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_dose))
                 }
@@ -117,6 +130,13 @@ fun AppNavHost(container: AppContainer) {
             }
             composable(Routes.DASHBOARD) {
                 DashboardScreen(
+                    container = container,
+                    onOpenDose = { uuid -> navController.navigate(Routes.editDose(uuid)) },
+                    onOpenChart = { navController.navigateTop(Routes.CHART) },
+                )
+            }
+            composable(Routes.CHART) {
+                ChartScreen(
                     container = container,
                     onOpenDose = { uuid -> navController.navigate(Routes.editDose(uuid)) },
                 )

@@ -48,6 +48,8 @@ data class DashboardUiState(
     val iob: Double = 0.0,
     val lastDose: DoseRecord? = null,
     val todayDoses: List<DoseRecord> = emptyList(),
+    val todayBolus: Double = 0.0,
+    val todayBasal: Double = 0.0,
     val profiles: Map<Long, Profile> = emptyMap(),
     val insulins: Map<Long, InsulinType> = emptyMap(),
     val scenes: Map<Long, Scene> = emptyMap(),
@@ -98,6 +100,16 @@ class DashboardViewModel(
 
         val last = catalog.doses.firstOrNull { it.deletedAt == null }
         val iob = IobCalculator.activeBolusIob(catalog.doses, insulinMap)
+        var todayBolus = 0.0
+        var todayBasal = 0.0
+        for (d in todayDoses) {
+            when (insulinMap[d.insulinId]?.category) {
+                InsulinCategory.BASAL -> todayBasal += d.units
+                else -> todayBolus += d.units
+            }
+        }
+        todayBolus = (todayBolus * 100).toInt() / 100.0
+        todayBasal = (todayBasal * 100).toInt() / 100.0
 
         val basalGiven = todayDoses.any { insulinMap[it.insulinId]?.category == InsulinCategory.BASAL }
         val reminderTime = catalog.settings?.basalReminderTime
@@ -119,6 +131,8 @@ class DashboardViewModel(
             iob = iob,
             lastDose = last,
             todayDoses = todayDoses,
+            todayBolus = todayBolus,
+            todayBasal = todayBasal,
             profiles = catalog.profiles.associateBy { it.id },
             insulins = insulinMap,
             scenes = catalog.scenes.associateBy { it.id },

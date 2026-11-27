@@ -15,11 +15,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -48,6 +50,7 @@ import sk.glukoview.insulinlog.ui.util.Formatters
 fun DashboardScreen(
     container: AppContainer,
     onOpenDose: (String) -> Unit,
+    onOpenChart: () -> Unit = {},
 ) {
     val vm: DashboardViewModel = viewModel(
         factory = DashboardViewModel.factory(
@@ -107,6 +110,9 @@ fun DashboardScreen(
                 ) {
                     item {
                         GlucoseIobCard(state)
+                    }
+                    item {
+                        TodaySummaryCard(state, onOpenChart)
                     }
                     if (state.basalReminder) {
                         item {
@@ -223,6 +229,51 @@ private fun GlucoseIobCard(state: DashboardUiState) {
                     text = Formatters.units(state.iob),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TodaySummaryCard(state: DashboardUiState, onOpenChart: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(stringResource(R.string.today_summary), style = MaterialTheme.typography.labelLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text("Bolus", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        Formatters.units(state.todayBolus),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Bazál", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        Formatters.units(state.todayBasal),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = onOpenChart,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null)
+                Text(
+                    text = stringResource(R.string.open_chart),
+                    modifier = Modifier.padding(start = 8.dp),
                 )
             }
         }
